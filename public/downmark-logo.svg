@@ -1,0 +1,92 @@
+<svg
+  width="1024"
+  height="1024"
+  viewBox="0 0 1024 1024"
+  fill="none"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <defs>
+    <path
+      id="shell"
+      d="M512 96C649 96 729 96 789 126C845 154 890 199 918 255C948 315 948 395 948 532C948 669 948 749 918 809C890 865 845 910 789 938C729 968 649 968 512 968C375 968 295 968 235 938C179 910 134 865 106 809C76 749 76 669 76 532C76 395 76 315 106 255C134 199 179 154 235 126C295 96 375 96 512 96Z"
+    />
+    <path
+      id="motif"
+      d="M356 282C356 252.177 380.177 228 410 228H614C643.823 228 668 252.177 668 282V680C668 707.145 638.658 724.125 615.158 710.725L536.783 666.053C521.537 657.361 502.463 657.361 487.217 666.053L408.842 710.725C385.342 724.125 356 707.145 356 680V282Z"
+    />
+    <linearGradient id="shell-fill" x1="162" y1="126" x2="864" y2="922" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" />
+      <stop offset="1" stop-color="#F5F6F9" />
+    </linearGradient>
+    <linearGradient id="motif-fill" x1="392" y1="250" x2="642" y2="704" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9CD7FF" />
+      <stop offset="0.5" stop-color="#4C97FF" />
+      <stop offset="1" stop-color="#2A2AF6" />
+    </linearGradient>
+    <filter
+      id="shell-shadow"
+      x="36"
+      y="58"
+      width="952"
+      height="952"
+      filterUnits="userSpaceOnUse"
+      color-interpolation-filters="sRGB"
+    >
+      <feFlood flood-opacity="0" result="BackgroundImageFix" />
+      <feColorMatrix
+        in="SourceAlpha"
+        type="matrix"
+        values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0"
+        result="hardAlpha"
+      />
+      <feOffset dy="18" />
+      <feGaussianBlur stdDeviation="18" />
+      <feColorMatrix
+        type="matrix"
+        values="0 0 0 0 0.0470588 0 0 0 0 0.0627451 0 0 0 0 0.101961 0 0 0 0.24 0"
+      />
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_0_1" />
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_0_1" result="shape" />
+    </filter>
+    <filter
+      id="motif-glow"
+      x="302"
+      y="178"
+      width="420"
+      height="594"
+      filterUnits="userSpaceOnUse"
+      color-interpolation-filters="sRGB"
+    >
+      <feFlood flood-opacity="0" result="BackgroundImageFix" />
+      <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape" />
+      <feGaussianBlur stdDeviation="10" result="effect1_foregroundBlur_0_1" />
+    </filter>
+    <clipPath id="shell-clip">
+      <use href="#shell" />
+    </clipPath>
+    <clipPath id="motif-clip">
+      <use href="#motif" />
+    </clipPath>
+  </defs>
+
+  <g filter="url(#shell-shadow)">
+    <use href="#shell" fill="url(#shell-fill)" />
+    <g clip-path="url(#shell-clip)">
+      <ellipse cx="512" cy="164" rx="326" ry="118" fill="#FFFFFF" opacity="0.72" />
+      <ellipse cx="830" cy="860" rx="318" ry="238" fill="#D9DEE8" opacity="0.18" />
+    </g>
+    <use href="#shell" fill="none" stroke="#E1E4EB" stroke-width="2" />
+  </g>
+
+  <g filter="url(#motif-glow)" opacity="0.28">
+    <use href="#motif" fill="#69A7FF" />
+  </g>
+
+  <g clip-path="url(#motif-clip)">
+    <use href="#motif" fill="url(#motif-fill)" />
+    <ellipse cx="450" cy="298" rx="172" ry="104" fill="#FFFFFF" opacity="0.34" />
+    <ellipse cx="528" cy="672" rx="214" ry="152" fill="#1E24C8" opacity="0.28" />
+  </g>
+
+  <use href="#motif" fill="none" stroke="#77A6FF" stroke-width="3" />
+</svg>
