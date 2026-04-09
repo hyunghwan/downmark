@@ -1,4 +1,10 @@
-import { useEffect, useEffectEvent, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { message, open, save } from "@tauri-apps/plugin-dialog";
 
 import { PromptDialog } from "./components/PromptDialog";
@@ -14,13 +20,14 @@ import {
   syncRichFromMarkdown,
 } from "./features/documents/file-session-manager";
 import { MarkdownGateway } from "./features/documents/markdown-gateway";
-import type { AppSettings, FileSession } from "./features/documents/types";
+import type { AppSettings, EditorMode, FileSession } from "./features/documents/types";
 import { ModeToggle } from "./features/editor/ModeToggle";
 import { RawEditorSurface } from "./features/editor/RawEditorSurface";
 import {
   RichEditorAdapter,
   type RichEditorAdapterHandle,
 } from "./features/editor/RichEditorAdapter";
+import { hasTauriRuntime } from "./features/runtime/tauri-runtime";
 import { ShellIntegration } from "./features/shell/shell-integration";
 
 type DeferredAction = { kind: "open-path"; path: string } | { kind: "new-draft" };
@@ -74,7 +81,47 @@ const MARKDOWN_FILTERS = [
   },
 ];
 const MOBILE_SIDEBAR_MAX_WIDTH = 760;
-const MAC_WINDOW_CONTROLS_RESERVED_WIDTH = 88;
+const MAC_WINDOW_CONTROLS_RESERVED_WIDTH = 110;
+const EMPTY_SETTINGS: AppSettings = { recentFiles: [] };
+
+interface ScrollSnapshot {
+  ratio: number;
+}
+
+interface RawSelectionSnapshot {
+  direction: "backward" | "forward" | "none";
+  end: number;
+  start: number;
+}
+
+interface RichSelectionSnapshot {
+  from: number;
+  to: number;
+}
+
+interface SurfaceRestoreState {
+  mode: EditorMode;
+  rawSelection: RawSelectionSnapshot | null;
+  richSelection: RichSelectionSnapshot | null;
+  scroll: ScrollSnapshot | null;
+}
+
+interface DownmarkTestBridge {
+  applyRichCommand: (commandId: string) => Promise<boolean>;
+  applySlashCommand: (commandId: string) => Promise<boolean>;
+  getRawValue: () => string;
+  getRichHtml: () => string;
+  insertRichText: (text: string) => Promise<boolean>;
+  selectAllRichText: () => Promise<boolean>;
+  setMode: (mode: EditorMode) => Promise<void>;
+  setRawValue: (value: string) => Promise<void>;
+}
+
+declare global {
+  interface Window {
+    __DOWNMARK_TEST__?: DownmarkTestBridge;
+  }
+}
 
 function isStringPath(value: string | string[] | null): value is string {
   return typeof value === "string";
@@ -97,30 +144,82 @@ function isMacWindowPlatform() {
   return /mac/i.test(navigator.userAgent) || /mac/i.test(navigator.platform);
 }
 
+function SidebarToggleIcon({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="titlebar-toggle-icon"
+      fill="none"
+      viewBox="0 0 16 16"
+    >
+      <rect
+        height="11"
+        rx="2.25"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        width="13"
+        x="1.5"
+        y="2.5"
+      />
+      <path d="M5.5 3.5v9" stroke="currentColor" strokeLinecap="round" strokeWidth="1.25" />
+      {collapsed ? (
+        <path
+          d="M8.25 8h2.5M9.75 6.25L11.5 8l-1.75 1.75"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.25"
+        />
+      ) : (
+        <path
+          d="M10.75 8h-2.5M9.25 6.25L7.5 8l1.75 1.75"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.25"
+        />
+      )}
+    </svg>
+  );
+}
+
 export function createDefaultAppDependencies(): AppDependencies {
   const gateway = new MarkdownGateway();
   const shell = new ShellIntegration();
+  const desktopRuntime = hasTauriRuntime();
 
   return {
     gateway,
     shell,
-    dialogs: {
-      openFile() {
-        return open({
-          multiple: false,
-          filters: MARKDOWN_FILTERS,
-        });
-      },
-      saveFile(defaultPath: string) {
-        return save({
-          defaultPath,
-          filters: MARKDOWN_FILTERS,
-        });
-      },
-      async showMessage(body, options) {
-        await message(body, options);
-      },
-    },
+    dialogs: desktopRuntime
+      ? {
+          openFile() {
+            return open({
+              multiple: false,
+              filters: MARKDOWN_FILTERS,
+            });
+          },
+          saveFile(defaultPath: string) {
+            return save({
+              defaultPath,
+              filters: MARKDOWN_FILTERS,
+            });
+          },
+          async showMessage(body, options) {
+            await message(body, options);
+          },
+        }
+      : {
+          async openFile() {
+            return null;
+          },
+          async saveFile() {
+            return null;
+          },
+          async showMessage(body, options) {
+            console.info(`${options.title}: ${body}`);
+          },
+        },
     async promptForLink() {
       const href = window.prompt("Enter a URL");
       return href?.trim() ? href.trim() : null;
@@ -136,7 +235,7 @@ function App({ dependencies }: AppProps) {
   const pollIntervalMs = appDependencies.fileStatusPollMs ?? 3000;
 
   const [session, setSession] = useState<FileSession>(() => createDraftSession());
-  const [settings, setSettings] = useState<AppSettings>({ recentFiles: [] });
+  const [settings, setSettings] = useState<AppSettings>(EMPTY_SETTINGS);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [promptState, setPromptState] = useState<PromptState>({ kind: "none" });
   const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(false);
@@ -147,6 +246,7 @@ function App({ dependencies }: AppProps) {
 
   const sessionRef = useRef(session);
   const promptStateRef = useRef(promptState);
+  const editorViewportRef = useRef<HTMLElement | null>(null);
   const rawEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const richEditorRef = useRef<RichEditorAdapterHandle | null>(null);
   const sidebarReturnFocusRef = useRef<HTMLElement | null>(null);
@@ -155,6 +255,9 @@ function App({ dependencies }: AppProps) {
   const recentItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
   const mobileSidebarWasOpenRef = useRef(false);
   const shouldRestoreSidebarFocusRef = useRef(false);
+  const rawSelectionRef = useRef<RawSelectionSnapshot | null>(null);
+  const richSelectionRef = useRef<RichSelectionSnapshot | null>(null);
+  const pendingSurfaceRestoreRef = useRef<SurfaceRestoreState | null>(null);
   const sidebarVisible = mobileViewport ? mobileSidebarOpen : !desktopSidebarCollapsed;
 
   useEffect(() => {
@@ -170,6 +273,53 @@ function App({ dependencies }: AppProps) {
   useEffect(() => {
     promptStateRef.current = promptState;
   }, [promptState]);
+
+  const captureViewportSnapshot = useEffectEvent(() => {
+    const viewport = editorViewportRef.current;
+    if (!viewport) {
+      return null;
+    }
+
+    const maxScroll = viewport.scrollHeight - viewport.clientHeight;
+    if (maxScroll <= 0) {
+      return { ratio: 0 } satisfies ScrollSnapshot;
+    }
+
+    return {
+      ratio: viewport.scrollTop / maxScroll,
+    } satisfies ScrollSnapshot;
+  });
+
+  const restoreViewportSnapshot = useEffectEvent((snapshot: ScrollSnapshot | null) => {
+    if (!snapshot) {
+      return;
+    }
+
+    const viewport = editorViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    const maxScroll = viewport.scrollHeight - viewport.clientHeight;
+    viewport.scrollTop = maxScroll <= 0 ? 0 : Math.round(maxScroll * snapshot.ratio);
+  });
+
+  const rememberRawSelection = useEffectEvent(() => {
+    const textarea = rawEditorRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    rawSelectionRef.current = {
+      start: textarea.selectionStart,
+      end: textarea.selectionEnd,
+      direction: textarea.selectionDirection ?? "none",
+    };
+  });
+
+  const rememberRichSelection = useEffectEvent(() => {
+    richSelectionRef.current = richEditorRef.current?.getSelectionRange() ?? null;
+  });
 
   const refreshSettings = useEffectEvent(async () => {
     const loadedSettings = await gateway.loadSettings();
@@ -197,6 +347,12 @@ function App({ dependencies }: AppProps) {
 
   const openPath = useEffectEvent(async (path: string) => {
     setBusyLabel("Opening");
+    pendingSurfaceRestoreRef.current = {
+      mode: "rich",
+      rawSelection: null,
+      richSelection: null,
+      scroll: { ratio: 0 },
+    };
 
     try {
       const file = await gateway.load(path);
@@ -287,6 +443,12 @@ function App({ dependencies }: AppProps) {
       return;
     }
 
+    pendingSurfaceRestoreRef.current = {
+      mode: session.mode,
+      rawSelection: null,
+      richSelection: null,
+      scroll: { ratio: 0 },
+    };
     setSession(createDraftSession(session.mode));
     setFocusTarget(session.mode);
   });
@@ -327,6 +489,12 @@ function App({ dependencies }: AppProps) {
     }
 
     setSession(createDraftSession(latestSession.mode));
+    pendingSurfaceRestoreRef.current = {
+      mode: latestSession.mode,
+      rawSelection: null,
+      richSelection: null,
+      scroll: { ratio: 0 },
+    };
     setFocusTarget(latestSession.mode);
   });
 
@@ -448,6 +616,19 @@ function App({ dependencies }: AppProps) {
 
     const file = await gateway.load(currentSession.path);
     const richDoc = gateway.toRich(file.markdown);
+    if (currentSession.mode === "rich") {
+      rememberRichSelection();
+    } else {
+      rememberRawSelection();
+    }
+    pendingSurfaceRestoreRef.current = {
+      mode: currentSession.mode,
+      rawSelection:
+        currentSession.mode === "raw" ? rawSelectionRef.current : null,
+      richSelection:
+        currentSession.mode === "rich" ? richSelectionRef.current : null,
+      scroll: captureViewportSnapshot(),
+    };
     setSession((current) => applyReloadedDocument(current, file, richDoc));
     setSettings(await gateway.recordRecentFile(file.path));
     setFocusTarget(currentSession.mode);
@@ -539,15 +720,31 @@ function App({ dependencies }: AppProps) {
       return;
     }
 
+    const viewportSnapshot = captureViewportSnapshot();
+
     if (nextMode === "rich") {
+      rememberRawSelection();
+      pendingSurfaceRestoreRef.current = {
+        mode: "rich",
+        rawSelection: null,
+        richSelection: richSelectionRef.current,
+        scroll: viewportSnapshot,
+      };
       const richDoc = gateway.toRich(session.canonicalMarkdown);
       setSession((current) => syncRichFromMarkdown(current, richDoc, "rich"));
       setFocusTarget("rich");
       return;
     }
 
+    rememberRichSelection();
     const latestSession =
       session.mode === "rich" ? syncSessionFromRichEditor(session) : session;
+    pendingSurfaceRestoreRef.current = {
+      mode: "raw",
+      rawSelection: rawSelectionRef.current,
+      richSelection: null,
+      scroll: viewportSnapshot,
+    };
     setSession(switchMode(latestSession, "raw"));
     setFocusTarget("raw");
   });
@@ -654,19 +851,131 @@ function App({ dependencies }: AppProps) {
     }
 
     const id = window.requestAnimationFrame(() => {
+      const pendingRestore =
+        pendingSurfaceRestoreRef.current?.mode === focusTarget
+          ? pendingSurfaceRestoreRef.current
+          : null;
+
       if (focusTarget === "raw") {
-        rawEditorRef.current?.focus();
+        const textarea = rawEditorRef.current;
+        textarea?.focus();
+
+        if (textarea && pendingRestore?.rawSelection) {
+          const start = Math.min(pendingRestore.rawSelection.start, textarea.value.length);
+          const end = Math.min(pendingRestore.rawSelection.end, textarea.value.length);
+          textarea.setSelectionRange(
+            start,
+            end,
+            pendingRestore.rawSelection.direction,
+          );
+        }
       } else {
         richEditorRef.current?.focus();
+
+        if (pendingRestore?.richSelection) {
+          richEditorRef.current?.restoreSelection(pendingRestore.richSelection);
+        }
       }
 
+      restoreViewportSnapshot(pendingRestore?.scroll ?? null);
+      pendingSurfaceRestoreRef.current = null;
       setFocusTarget(null);
     });
 
     return () => {
       window.cancelAnimationFrame(id);
     };
-  }, [focusTarget, session.mode, session.richVersion]);
+  }, [focusTarget, restoreViewportSnapshot, session.mode, session.richVersion]);
+
+  useEffect(() => {
+    if (!navigator.webdriver) {
+      return;
+    }
+
+    const waitForPaint = () =>
+      new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            resolve();
+          });
+        });
+      });
+
+    window.__DOWNMARK_TEST__ = {
+      async applyRichCommand(commandId) {
+        if (sessionRef.current.mode !== "rich") {
+          handleModeChange("rich");
+          await waitForPaint();
+        }
+
+        const applied = (await richEditorRef.current?.applyCommand(commandId)) ?? false;
+        await waitForPaint();
+        return applied;
+      },
+      async applySlashCommand(commandId) {
+        if (sessionRef.current.mode !== "rich") {
+          handleModeChange("rich");
+          await waitForPaint();
+        }
+
+        const applied = richEditorRef.current?.applySlashCommand(commandId) ?? false;
+        await waitForPaint();
+        return applied;
+      },
+      getRawValue() {
+        return rawEditorRef.current?.value ?? sessionRef.current.canonicalMarkdown;
+      },
+      getRichHtml() {
+        return richEditorRef.current?.getHtml() ?? "";
+      },
+      async insertRichText(text) {
+        if (sessionRef.current.mode !== "rich") {
+          handleModeChange("rich");
+          await waitForPaint();
+        }
+
+        const inserted = richEditorRef.current?.insertText(text) ?? false;
+        await waitForPaint();
+        return inserted;
+      },
+      async selectAllRichText() {
+        if (sessionRef.current.mode !== "rich") {
+          handleModeChange("rich");
+          await waitForPaint();
+        }
+
+        const selected = richEditorRef.current?.selectAll() ?? false;
+        await waitForPaint();
+        return selected;
+      },
+      async setMode(mode) {
+        if (sessionRef.current.mode !== mode) {
+          handleModeChange(mode);
+        }
+
+        await waitForPaint();
+      },
+      async setRawValue(value) {
+        if (sessionRef.current.mode !== "raw") {
+          handleModeChange("raw");
+          await waitForPaint();
+        }
+
+        const newlineStyle = sessionRef.current.newlineStyle;
+        setSession((current) =>
+          replaceRawMarkdown(
+            current,
+            gateway.normalize(value, { newlineStyle }),
+          ),
+        );
+        await waitForPaint();
+      },
+    };
+
+    return () => {
+      delete window.__DOWNMARK_TEST__;
+    };
+  }, [gateway, handleModeChange]);
 
   useEffect(() => {
     if (mobileViewport && mobileSidebarOpen) {
@@ -730,14 +1039,14 @@ function App({ dependencies }: AppProps) {
     if (session.conflictKind === "missing") {
       return {
         tone: "warning",
-        text: "This file was moved or deleted on disk. Keep editing here, then use Save As to keep your changes.",
+        text: "File missing on disk. Keep editing here, then use Save As to keep your changes.",
       };
     }
 
     if (session.conflictKind === "stale-write") {
       return {
         tone: "warning",
-        text: "The file changed on disk before save finished. Reload from disk or use Save As to avoid overwriting.",
+        text: "Disk version changed before save finished. Reload from disk or use Save As.",
       };
     }
 
@@ -751,7 +1060,7 @@ function App({ dependencies }: AppProps) {
     if (session.conflictKind === "externally-modified") {
       return {
         tone: "warning",
-        text: "This file changed on disk while you were editing it.",
+        text: "Disk version changed while you still have unsaved edits.",
       };
     }
 
@@ -759,6 +1068,8 @@ function App({ dependencies }: AppProps) {
   })();
 
   const statusLabel = busyLabel ?? (session.dirty ? "Unsaved" : "Saved");
+  const editorModeLabel = session.mode === "rich" ? "Rich" : "Raw";
+  const documentLocationLabel = session.path ?? "Scratch note";
   const liveStatus = [
     session.displayName,
     statusLabel,
@@ -770,7 +1081,6 @@ function App({ dependencies }: AppProps) {
   }`;
   const sidebarToggleLabel =
     sidebarVisible && !mobileViewport ? "Collapse sidebar" : "Open recent files";
-  const sidebarToggleText = sidebarVisible && !mobileViewport ? "Hide" : "Recent";
   const showSidebarTitlebarPane = sidebarVisible && !mobileViewport;
 
   return (
@@ -805,41 +1115,17 @@ function App({ dependencies }: AppProps) {
         <header className="app-titlebar">
           {showSidebarTitlebarPane ? (
             <div className="app-titlebar-sidebar-pane">
-              <div
-                aria-hidden="true"
-                className="app-titlebar-window-gap"
-                data-tauri-drag-region={isMacWindow ? true : undefined}
-              />
-              <div className="app-titlebar-sidebar-drag" data-tauri-drag-region />
-              <button
-                aria-expanded={sidebarVisible}
-                aria-haspopup={mobileViewport ? "dialog" : undefined}
-                aria-label={sidebarToggleLabel}
-                className="toolbar-button"
-                onClick={(event) => {
-                  if (sidebarVisible && !mobileViewport) {
-                    collapseSidebar();
-                    return;
-                  }
-
-                  openSidebar(event.currentTarget);
-                }}
-                ref={sidebarToggleRef}
-                type="button"
-              >
-                {sidebarToggleText}
-              </button>
-            </div>
-          ) : null}
-
-          <div className="app-titlebar-workspace-pane">
-            <div className="app-titlebar-workspace-main">
-              {!showSidebarTitlebarPane ? (
+              <div className="app-titlebar-sidebar-controls">
+                <div
+                  aria-hidden="true"
+                  className="app-titlebar-window-gap"
+                  data-tauri-drag-region={isMacWindow ? true : undefined}
+                />
                 <button
                   aria-expanded={sidebarVisible}
                   aria-haspopup={mobileViewport ? "dialog" : undefined}
                   aria-label={sidebarToggleLabel}
-                  className="toolbar-button"
+                  className="titlebar-icon-button"
                   onClick={(event) => {
                     if (sidebarVisible && !mobileViewport) {
                       collapseSidebar();
@@ -851,8 +1137,41 @@ function App({ dependencies }: AppProps) {
                   ref={sidebarToggleRef}
                   type="button"
                 >
-                  {sidebarToggleText}
+                  <SidebarToggleIcon collapsed={!sidebarVisible} />
                 </button>
+              </div>
+              <div className="app-titlebar-sidebar-drag" data-tauri-drag-region />
+            </div>
+          ) : null}
+
+          <div className="app-titlebar-workspace-pane">
+            <div className="app-titlebar-workspace-main">
+              {!showSidebarTitlebarPane ? (
+                <div className="app-titlebar-leading-controls">
+                  <div
+                    aria-hidden="true"
+                    className="app-titlebar-window-gap"
+                    data-tauri-drag-region={isMacWindow ? true : undefined}
+                  />
+                  <button
+                    aria-expanded={sidebarVisible}
+                    aria-haspopup={mobileViewport ? "dialog" : undefined}
+                    aria-label={sidebarToggleLabel}
+                    className="titlebar-icon-button"
+                    onClick={(event) => {
+                      if (sidebarVisible && !mobileViewport) {
+                        collapseSidebar();
+                        return;
+                      }
+
+                      openSidebar(event.currentTarget);
+                    }}
+                    ref={sidebarToggleRef}
+                    type="button"
+                  >
+                    <SidebarToggleIcon collapsed={!sidebarVisible} />
+                  </button>
+                </div>
               ) : null}
               <div className="document-heading" data-tauri-drag-region>
                 <span className="document-label">Document</span>
@@ -978,15 +1297,6 @@ function App({ dependencies }: AppProps) {
           ) : null}
 
           <main className="workspace">
-            <div className="workspace-top">
-              <div className="meta-row">
-                <span className="document-path">{session.path ?? "Scratch note"}</span>
-                <span className="meta-inline">
-                  {session.newlineStyle.toUpperCase()} . {session.mode === "rich" ? "Rich" : "Raw"}
-                </span>
-              </div>
-            </div>
-
             <div className="workspace-body">
               {banner ? (
                 <div className={`banner tone-${banner.tone}`} role="alert">
@@ -994,7 +1304,7 @@ function App({ dependencies }: AppProps) {
                 </div>
               ) : null}
 
-              <section className="editor-shell">
+              <section className="editor-shell" ref={editorViewportRef}>
                 {session.mode === "rich" ? (
                   <RichEditorAdapter
                     autoFocus={focusTarget === "rich"}
@@ -1013,6 +1323,16 @@ function App({ dependencies }: AppProps) {
                   />
                 )}
               </section>
+
+              <footer className="workspace-statusbar">
+                <span className="workspace-status-path" title={documentLocationLabel}>
+                  {documentLocationLabel}
+                </span>
+                <div className="workspace-status-meta">
+                  <span className="status-chip">{session.newlineStyle.toUpperCase()}</span>
+                  <span className="status-chip">{editorModeLabel}</span>
+                </div>
+              </footer>
             </div>
           </main>
         </div>

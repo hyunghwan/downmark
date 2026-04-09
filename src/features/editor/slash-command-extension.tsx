@@ -6,12 +6,16 @@ import tippy, { type Instance, type Props as TippyProps } from "tippy.js";
 import { getCommandRegistry, type CommandDefinition } from "./command-registry";
 import { SlashMenu, type SlashMenuHandle } from "./SlashMenu";
 
-function applySlashCommand(
+export function applySlashCommand(
   editor: Editor,
   id: string,
-  range: { from: number; to: number },
+  range?: { from: number; to: number },
 ) {
-  const chain = editor.chain().focus().deleteRange(range);
+  const chain = editor.chain().focus();
+
+  if (range) {
+    chain.deleteRange(range);
+  }
 
   switch (id) {
     case "paragraph":

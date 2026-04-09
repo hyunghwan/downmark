@@ -15,12 +15,19 @@ import {
   canApplyEditorCommand,
 } from "./command-registry";
 import { createRichEditorExtensions } from "./extensions";
+import { applySlashCommand } from "./slash-command-extension";
 
 const richExtensions = createRichEditorExtensions();
 
 export interface RichEditorAdapterHandle {
   setContent: (doc: JSONContent) => void;
   getPendingDoc: () => JSONContent | null;
+  getHtml: () => string;
+  getSelectionRange: () => { from: number; to: number } | null;
+  restoreSelection: (range: { from: number; to: number } | null) => void;
+  insertText: (text: string) => boolean;
+  selectAll: () => boolean;
+  applySlashCommand: (commandId: string) => boolean;
   applyCommand: (commandId: string) => Promise<boolean>;
   canApply: (commandId: string) => boolean;
   focus: () => void;
@@ -87,6 +94,53 @@ const RichEditorAdapterInner = forwardRef<
       },
       getPendingDoc() {
         return editor?.getJSON() ?? null;
+      },
+      getHtml() {
+        return editor?.getHTML() ?? "";
+      },
+      getSelectionRange() {
+        if (!editor) {
+          return null;
+        }
+
+        const { from, to } = editor.state.selection;
+        return { from, to };
+      },
+      restoreSelection(range) {
+        if (!editor || !range) {
+          return;
+        }
+
+        const maxPosition = editor.state.doc.content.size;
+        if (maxPosition < 1) {
+          editor.chain().focus().run();
+          return;
+        }
+
+        const from = Math.min(Math.max(range.from, 1), maxPosition);
+        const to = Math.min(Math.max(range.to, 1), maxPosition);
+        editor.chain().focus().setTextSelection({ from, to }).run();
+      },
+      insertText(text) {
+        if (!editor) {
+          return false;
+        }
+
+        return editor.chain().focus().insertContent(text).run();
+      },
+      selectAll() {
+        if (!editor) {
+          return false;
+        }
+
+        return editor.chain().focus().selectAll().run();
+      },
+      applySlashCommand(commandId) {
+        if (!editor) {
+          return false;
+        }
+
+        return applySlashCommand(editor, commandId);
       },
       async applyCommand(commandId) {
         if (!editor) {

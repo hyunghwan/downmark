@@ -405,7 +405,9 @@ describe("downmark app", () => {
         screen.getByRole("alertdialog", { name: "File changed on disk" }),
       ).toBeInTheDocument();
     });
-    expect(screen.getByRole("alert")).toHaveTextContent("This file changed on disk while you were editing it.");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Disk version changed while you still have unsaved edits.",
+    );
     expect(screen.getByRole("status")).toHaveTextContent("Unsaved");
 
     await user.click(screen.getByRole("button", { name: "Keep Mine" }));
