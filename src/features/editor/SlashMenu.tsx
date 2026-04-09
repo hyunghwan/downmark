@@ -66,7 +66,11 @@ export const SlashMenu = forwardRef<SlashMenuHandle, SlashMenuProps>(
             aria-pressed={selectedIndex === index}
             key={item.id}
             className={`slash-item ${selectedIndex === index ? "is-active" : ""}`}
-            onClick={() => onSelect(item)}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              onSelect(item);
+            }}
+            tabIndex={-1}
             type="button"
           >
             <span className="slash-label">{item.label}</span>

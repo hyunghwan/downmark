@@ -263,14 +263,25 @@ function renderApp(options?: {
   return dependencies;
 }
 
+function setViewportWidth(width: number) {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    writable: true,
+    value: width,
+  });
+
+  window.dispatchEvent(new Event("resize"));
+}
+
 async function waitForOpenFile(name: string) {
   await waitFor(() => {
-    expect(screen.getByText(name)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name })).toBeInTheDocument();
   });
 }
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  setViewportWidth(1024);
 });
 
 describe("downmark app", () => {
@@ -278,7 +289,7 @@ describe("downmark app", () => {
     const user = userEvent.setup();
     renderApp();
 
-    await user.click(screen.getByRole("radio", { name: "Raw" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Raw" }));
 
     const textarea = screen.getByRole("textbox", { name: "Raw markdown editor" });
     fireEvent.change(textarea, {
@@ -314,6 +325,31 @@ describe("downmark app", () => {
       expect(textarea).toHaveFocus();
     });
     expect(textarea).toHaveValue("Hello from rich");
+  });
+
+  it("preserves heading block formatting when switching back to raw", async () => {
+    renderApp({
+      files: [
+        {
+          path: "/notes/current.md",
+          markdown: "# Title",
+        },
+      ],
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    const richEditor = await screen.findByRole("textbox", { name: "Rich text editor" });
+    expect(within(richEditor).getByRole("heading", { level: 1, name: "Title" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Raw" }));
+
+    const textarea = (await screen.findByRole("textbox", {
+      name: "Raw markdown editor",
+    })) as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(textarea.value.trimEnd()).toBe("# Title");
+    });
   });
 
   it("prompts before opening a new file when there are unsaved changes", async () => {
@@ -376,8 +412,33 @@ describe("downmark app", () => {
     expect(screen.queryByRole("alertdialog", { name: "File changed on disk" })).not.toBeInTheDocument();
   });
 
-  it("removes missing recent files and closes the drawer with Escape", async () => {
+  it("shows the recent sidebar by default on desktop and supports collapse/reopen", async () => {
     const user = userEvent.setup();
+    renderApp({
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    expect(
+      screen.getByRole("complementary", { name: "Recent files" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /current\.md/i })).toHaveClass("is-active");
+
+    await user.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    expect(
+      screen.queryByRole("complementary", { name: "Recent files" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open recent files" }));
+    expect(
+      await screen.findByRole("complementary", { name: "Recent files" }),
+    ).toBeInTheDocument();
+  });
+
+  it("removes missing recent files and closes the mobile overlay with Escape", async () => {
+    const user = userEvent.setup();
+    setViewportWidth(700);
     const dependencies = renderApp({
       initialPaths: ["/notes/current.md"],
       settings: {
@@ -400,24 +461,31 @@ describe("downmark app", () => {
       expect(dependencies.gateway.removedPaths).toContain("/notes/missing.md");
     });
 
-    await user.click(screen.getByRole("button", { name: "Open file drawer" }));
+    const richEditor = await screen.findByRole("textbox", { name: "Rich text editor" });
+    await waitFor(() => {
+      expect(richEditor).toHaveFocus();
+    });
 
-    const drawer = await screen.findByRole("dialog", { name: "Recent" });
-    expect(drawer).toBeInTheDocument();
+    const sidebarToggle = screen.getByRole("button", { name: "Open recent files" });
+    await user.click(sidebarToggle);
+
+    const sidebar = await screen.findByRole("dialog", { name: "Recent files" });
+    expect(sidebar).toBeInTheDocument();
     expect(screen.queryByText("missing.md")).not.toBeInTheDocument();
 
-    const currentRecent = screen.getByRole("button", { name: /current\.md/i });
+    const currentRecent = within(sidebar).getByRole("button", { name: /current\.md/i });
     await waitFor(() => {
       expect(currentRecent).toHaveFocus();
     });
 
-    fireEvent.keyDown(currentRecent, { key: "Escape" });
+    fireEvent.keyDown(sidebar, { key: "Escape" });
     await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: "Recent" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: "Recent files" })).not.toBeInTheDocument();
     });
-    expect(
-      screen.getByRole("button", { name: "Open file drawer" }),
-    ).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => {
+      expect(sidebarToggle).toHaveFocus();
+    });
+    expect(sidebarToggle).toHaveAttribute("aria-expanded", "false");
   });
 
   it("supports keyboard shortcuts for open, save, and save as", async () => {

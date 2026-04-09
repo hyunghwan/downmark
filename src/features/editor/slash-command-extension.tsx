@@ -1,14 +1,51 @@
-import { Extension } from "@tiptap/core";
-import Suggestion from "@tiptap/suggestion";
+import { Extension, type Editor } from "@tiptap/core";
+import Suggestion, { exitSuggestion, SuggestionPluginKey } from "@tiptap/suggestion";
 import { ReactRenderer } from "@tiptap/react";
 import tippy, { type Instance, type Props as TippyProps } from "tippy.js";
 
-import {
-  applyEditorCommand,
-  getCommandRegistry,
-  type CommandDefinition,
-} from "./command-registry";
+import { getCommandRegistry, type CommandDefinition } from "./command-registry";
 import { SlashMenu, type SlashMenuHandle } from "./SlashMenu";
+
+function applySlashCommand(
+  editor: Editor,
+  id: string,
+  range: { from: number; to: number },
+) {
+  const chain = editor.chain().focus().deleteRange(range);
+
+  switch (id) {
+    case "paragraph":
+      return chain.setParagraph().run();
+    case "heading-1":
+      return chain.setHeading({ level: 1 }).run();
+    case "heading-2":
+      return chain.setHeading({ level: 2 }).run();
+    case "heading-3":
+      return chain.setHeading({ level: 3 }).run();
+    case "bold":
+      return chain.toggleBold().run();
+    case "italic":
+      return chain.toggleItalic().run();
+    case "strike":
+      return chain.toggleStrike().run();
+    case "inline-code":
+      return chain.toggleCode().run();
+    case "bullet-list":
+      return chain.toggleBulletList().run();
+    case "ordered-list":
+      return chain.toggleOrderedList().run();
+    case "task-list":
+      return chain.toggleTaskList().run();
+    case "blockquote":
+      return chain.toggleBlockquote().run();
+    case "code-block":
+      return chain.toggleCodeBlock().run();
+    case "horizontal-rule":
+      return chain.setHorizontalRule().run();
+    default:
+      return false;
+  }
+}
 
 function filterCommands(query: string) {
   const normalizedQuery = query.trim().toLowerCase();
@@ -39,8 +76,11 @@ export function createSlashCommandExtension() {
           allowSpaces: false,
           items: ({ query }) => filterCommands(query),
           command: ({ editor, range, props }) => {
-            editor.chain().focus().deleteRange(range).run();
-            applyEditorCommand(editor, props.id);
+            const applied = applySlashCommand(editor, props.id, range);
+
+            if (applied) {
+              exitSuggestion(editor.view, SuggestionPluginKey);
+            }
           },
           allow: ({ state }) => {
             const { $from } = state.selection;
@@ -49,6 +89,14 @@ export function createSlashCommandExtension() {
           render: () => {
             let reactRenderer: ReactRenderer<SlashMenuHandle> | null = null;
             let popup: Instance<TippyProps> | null = null;
+            const destroyMenu = () => {
+              if (popup && !popup.state.isDestroyed) {
+                popup.destroy();
+              }
+              popup = null;
+              reactRenderer?.destroy();
+              reactRenderer = null;
+            };
 
             return {
               onStart: (props) => {
@@ -68,6 +116,7 @@ export function createSlashCommandExtension() {
 
                 popup = tippy(document.body, {
                   appendTo: () => document.body,
+                  arrow: false,
                   content: reactRenderer.element,
                   getReferenceClientRect: () => props.clientRect?.() ?? new DOMRect(),
                   interactive: true,
@@ -106,8 +155,7 @@ export function createSlashCommandExtension() {
                 );
               },
               onExit() {
-                popup?.destroy();
-                reactRenderer?.destroy();
+                destroyMenu();
               },
             };
           },

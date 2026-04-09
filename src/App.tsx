@@ -1,10 +1,4 @@
-import {
-  startTransition,
-  useEffect,
-  useEffectEvent,
-  useRef,
-  useState,
-} from "react";
+import { useEffect, useEffectEvent, useRef, useState, type CSSProperties } from "react";
 import { message, open, save } from "@tauri-apps/plugin-dialog";
 
 import { PromptDialog } from "./components/PromptDialog";
@@ -34,12 +28,6 @@ type PromptState =
   | { kind: "none" }
   | { kind: "unsaved"; action: DeferredAction }
   | { kind: "external-modified" };
-
-type FocusTrapEvent = {
-  key: string;
-  preventDefault: () => void;
-  shiftKey: boolean;
-};
 type DialogResult = string | string[] | null;
 type EditorFocusTarget = "raw" | "rich" | null;
 
@@ -85,6 +73,8 @@ const MARKDOWN_FILTERS = [
     extensions: ["md", "markdown", "mdown"],
   },
 ];
+const MOBILE_SIDEBAR_MAX_WIDTH = 760;
+const MAC_WINDOW_CONTROLS_RESERVED_WIDTH = 88;
 
 function isStringPath(value: string | string[] | null): value is string {
   return typeof value === "string";
@@ -99,52 +89,12 @@ function formatLastOpened(timestamp: number) {
   }).format(timestamp);
 }
 
-function getFocusableElements(container: HTMLElement | null) {
-  if (!container) {
-    return [];
-  }
-
-  return Array.from(
-    container.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-    ),
-  ).filter((element) => !element.hasAttribute("hidden"));
+function isMobileViewport() {
+  return window.innerWidth <= MOBILE_SIDEBAR_MAX_WIDTH;
 }
 
-function trapFocusWithin(
-  event: FocusTrapEvent,
-  container: HTMLElement | null,
-) {
-  if (event.key !== "Tab") {
-    return false;
-  }
-
-  const focusableElements = getFocusableElements(container);
-  if (!focusableElements.length) {
-    return false;
-  }
-
-  const firstElement = focusableElements[0];
-  const lastElement = focusableElements[focusableElements.length - 1];
-  const activeElement = document.activeElement as HTMLElement | null;
-
-  if (!activeElement) {
-    return false;
-  }
-
-  if (!event.shiftKey && activeElement === lastElement) {
-    event.preventDefault();
-    firstElement.focus();
-    return true;
-  }
-
-  if (event.shiftKey && activeElement === firstElement) {
-    event.preventDefault();
-    lastElement.focus();
-    return true;
-  }
-
-  return false;
+function isMacWindowPlatform() {
+  return /mac/i.test(navigator.userAgent) || /mac/i.test(navigator.platform);
 }
 
 export function createDefaultAppDependencies(): AppDependencies {
@@ -189,21 +139,23 @@ function App({ dependencies }: AppProps) {
   const [settings, setSettings] = useState<AppSettings>({ recentFiles: [] });
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [promptState, setPromptState] = useState<PromptState>({ kind: "none" });
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [mobileViewport, setMobileViewport] = useState(() => isMobileViewport());
+  const [isMacWindow] = useState(() => isMacWindowPlatform());
   const [focusTarget, setFocusTarget] = useState<EditorFocusTarget>(null);
 
   const sessionRef = useRef(session);
   const promptStateRef = useRef(promptState);
   const rawEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const richEditorRef = useRef<RichEditorAdapterHandle | null>(null);
-  const drawerRef = useRef<HTMLElement | null>(null);
-  const drawerReturnFocusRef = useRef<HTMLElement | null>(null);
-  const drawerToggleRef = useRef<HTMLButtonElement | null>(null);
-  const drawerNewButtonRef = useRef<HTMLButtonElement | null>(null);
-  const drawerCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const sidebarReturnFocusRef = useRef<HTMLElement | null>(null);
+  const sidebarToggleRef = useRef<HTMLButtonElement | null>(null);
+  const sidebarRefreshButtonRef = useRef<HTMLButtonElement | null>(null);
   const recentItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
-  const drawerWasOpenRef = useRef(false);
-  const shouldRestoreDrawerFocusRef = useRef(false);
+  const mobileSidebarWasOpenRef = useRef(false);
+  const shouldRestoreSidebarFocusRef = useRef(false);
+  const sidebarVisible = mobileViewport ? mobileSidebarOpen : !desktopSidebarCollapsed;
 
   useEffect(() => {
     return () => {
@@ -272,8 +224,15 @@ function App({ dependencies }: AppProps) {
   });
 
   const saveCurrent = useEffectEvent(async (pathOverride?: string) => {
+    const latestSession =
+      session.mode === "rich" ? syncSessionFromRichEditor(session) : session;
+
+    if (latestSession !== session) {
+      setSession(latestSession);
+    }
+
     let targetPath = pathOverride;
-    if (!targetPath && !session.path) {
+    if (!targetPath && !latestSession.path) {
       const result = await dialogs.saveFile("Untitled.md");
 
       if (!isStringPath(result)) {
@@ -283,10 +242,12 @@ function App({ dependencies }: AppProps) {
       targetPath = result;
     }
 
-    setBusyLabel(targetPath && targetPath !== session.path ? "Saving as" : "Saving");
+    setBusyLabel(
+      targetPath && targetPath !== latestSession.path ? "Saving as" : "Saving",
+    );
 
     try {
-      const result = await gateway.save(session, targetPath);
+      const result = await gateway.save(latestSession, targetPath);
       setSession((current) => markSaved(current, result));
       setSettings(await gateway.recordRecentFile(result.path));
       return true;
@@ -331,7 +292,14 @@ function App({ dependencies }: AppProps) {
   });
 
   const requestOpenPath = useEffectEvent(async (path: string) => {
-    if (session.dirty) {
+    const latestSession =
+      session.mode === "rich" ? syncSessionFromRichEditor(session) : session;
+
+    if (latestSession !== session) {
+      setSession(latestSession);
+    }
+
+    if (latestSession.dirty) {
       setPromptState({
         kind: "unsaved",
         action: { kind: "open-path", path },
@@ -343,7 +311,14 @@ function App({ dependencies }: AppProps) {
   });
 
   const requestNewDraft = useEffectEvent(async () => {
-    if (session.dirty) {
+    const latestSession =
+      session.mode === "rich" ? syncSessionFromRichEditor(session) : session;
+
+    if (latestSession !== session) {
+      setSession(latestSession);
+    }
+
+    if (latestSession.dirty) {
       setPromptState({
         kind: "unsaved",
         action: { kind: "new-draft" },
@@ -351,8 +326,8 @@ function App({ dependencies }: AppProps) {
       return;
     }
 
-    setSession(createDraftSession(session.mode));
-    setFocusTarget(session.mode);
+    setSession(createDraftSession(latestSession.mode));
+    setFocusTarget(latestSession.mode);
   });
 
   const blurEditorSurfaces = useEffectEvent(() => {
@@ -360,11 +335,76 @@ function App({ dependencies }: AppProps) {
     richEditorRef.current?.blur();
   });
 
-  const closeSidebar = useEffectEvent(() => {
-    blurEditorSurfaces();
-    shouldRestoreDrawerFocusRef.current = true;
-    setSidebarOpen(false);
+  const restoreSidebarToggleFocus = useEffectEvent(() => {
+    const restoreFocus = () => {
+      (sidebarReturnFocusRef.current ?? sidebarToggleRef.current)?.focus();
+    };
+
+    window.requestAnimationFrame(() => {
+      restoreFocus();
+      window.setTimeout(() => {
+        restoreFocus();
+      }, 0);
+      window.setTimeout(() => {
+        restoreFocus();
+      }, 40);
+    });
   });
+
+  const openSidebar = useEffectEvent((returnFocusTarget?: HTMLElement | null) => {
+    sidebarReturnFocusRef.current = returnFocusTarget ?? null;
+
+    if (mobileViewport) {
+      blurEditorSurfaces();
+      setMobileSidebarOpen(true);
+      return;
+    }
+
+    setDesktopSidebarCollapsed(false);
+  });
+
+  const closeMobileSidebar = useEffectEvent(() => {
+    if (!mobileViewport) {
+      return;
+    }
+
+    blurEditorSurfaces();
+    shouldRestoreSidebarFocusRef.current = true;
+    setMobileSidebarOpen(false);
+    restoreSidebarToggleFocus();
+  });
+
+  const collapseSidebar = useEffectEvent(() => {
+    blurEditorSurfaces();
+
+    if (mobileViewport) {
+      shouldRestoreSidebarFocusRef.current = true;
+      setMobileSidebarOpen(false);
+      return;
+    }
+
+    setDesktopSidebarCollapsed(true);
+  });
+
+  const syncSessionFromRichEditor = useEffectEvent(
+    (currentSession: FileSession) => {
+      if (currentSession.mode !== "rich") {
+        return currentSession;
+      }
+
+      const pendingDoc = richEditorRef.current?.getPendingDoc();
+      if (!pendingDoc) {
+        return currentSession;
+      }
+
+      const markdown = gateway.fromRich(pendingDoc);
+      if (markdown === currentSession.canonicalMarkdown) {
+        return currentSession;
+      }
+
+      return replaceRichDoc(currentSession, pendingDoc, markdown);
+    },
+  );
 
   const checkExternalChanges = useEffectEvent(async () => {
     const currentSession = sessionRef.current;
@@ -443,6 +483,24 @@ function App({ dependencies }: AppProps) {
   }, [openPath, refreshSettings, requestOpenPath, shell]);
 
   useEffect(() => {
+    const handleResize = () => {
+      setMobileViewport(isMobileViewport());
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mobileViewport) {
+      shouldRestoreSidebarFocusRef.current = false;
+      setMobileSidebarOpen(false);
+    }
+  }, [mobileViewport]);
+
+  useEffect(() => {
     if (!session.path) {
       return;
     }
@@ -488,7 +546,9 @@ function App({ dependencies }: AppProps) {
       return;
     }
 
-    setSession((current) => switchMode(current, "raw"));
+    const latestSession =
+      session.mode === "rich" ? syncSessionFromRichEditor(session) : session;
+    setSession(switchMode(latestSession, "raw"));
     setFocusTarget("raw");
   });
 
@@ -500,10 +560,8 @@ function App({ dependencies }: AppProps) {
 
   const handleRichChange = useEffectEvent(
     (doc: import("@tiptap/core").JSONContent) => {
-      startTransition(() => {
-        const markdown = gateway.fromRich(doc);
-        setSession((current) => replaceRichDoc(current, doc, markdown));
-      });
+      const markdown = gateway.fromRich(doc);
+      setSession((current) => replaceRichDoc(current, doc, markdown));
     },
   );
 
@@ -611,8 +669,8 @@ function App({ dependencies }: AppProps) {
   }, [focusTarget, session.mode, session.richVersion]);
 
   useEffect(() => {
-    if (sidebarOpen) {
-      drawerWasOpenRef.current = true;
+    if (mobileViewport && mobileSidebarOpen) {
+      mobileSidebarWasOpenRef.current = true;
 
       const id = window.requestAnimationFrame(() => {
         const activeRecent =
@@ -622,8 +680,7 @@ function App({ dependencies }: AppProps) {
           settings.recentFiles
             .map((entry) => recentItemRefs.current.get(entry.path) ?? null)
             .find(Boolean) ??
-          drawerNewButtonRef.current ??
-          drawerCloseButtonRef.current;
+          sidebarRefreshButtonRef.current;
 
         activeRecent?.focus();
       });
@@ -633,66 +690,41 @@ function App({ dependencies }: AppProps) {
       };
     }
 
-    if (drawerWasOpenRef.current) {
-      drawerWasOpenRef.current = false;
-      const shouldRestoreFocus = shouldRestoreDrawerFocusRef.current;
-      shouldRestoreDrawerFocusRef.current = false;
+    if (mobileSidebarWasOpenRef.current) {
+      mobileSidebarWasOpenRef.current = false;
+      const shouldRestoreFocus = shouldRestoreSidebarFocusRef.current;
+      shouldRestoreSidebarFocusRef.current = false;
       if (!shouldRestoreFocus) {
         return;
       }
 
       const restoreFocus = () => {
-        (
-          drawerReturnFocusRef.current ??
-          drawerToggleRef.current
-        )?.focus();
+        (sidebarReturnFocusRef.current ?? sidebarToggleRef.current)?.focus();
       };
-      let timeoutId: number | null = null;
-      let secondTimeoutId: number | null = null;
-      let guardTimeoutId: number | null = null;
-      const handleFocusIn = (event: FocusEvent) => {
-        const restoreTarget =
-          drawerReturnFocusRef.current ??
-          drawerToggleRef.current;
-        if (!restoreTarget) {
-          return;
-        }
 
-        if (event.target === restoreTarget) {
-          return;
-        }
-
-        restoreFocus();
-      };
+      let immediateTimeoutId: number | null = null;
+      let delayedTimeoutId: number | null = null;
       const id = window.requestAnimationFrame(() => {
-        document.addEventListener("focusin", handleFocusIn);
         restoreFocus();
-        timeoutId = window.setTimeout(() => {
+        immediateTimeoutId = window.setTimeout(() => {
           restoreFocus();
         }, 0);
-        secondTimeoutId = window.setTimeout(() => {
+        delayedTimeoutId = window.setTimeout(() => {
           restoreFocus();
         }, 40);
-        guardTimeoutId = window.setTimeout(() => {
-          document.removeEventListener("focusin", handleFocusIn);
-        }, 120);
       });
 
       return () => {
         window.cancelAnimationFrame(id);
-        document.removeEventListener("focusin", handleFocusIn);
-        if (timeoutId !== null) {
-          window.clearTimeout(timeoutId);
+        if (immediateTimeoutId !== null) {
+          window.clearTimeout(immediateTimeoutId);
         }
-        if (secondTimeoutId !== null) {
-          window.clearTimeout(secondTimeoutId);
-        }
-        if (guardTimeoutId !== null) {
-          window.clearTimeout(guardTimeoutId);
+        if (delayedTimeoutId !== null) {
+          window.clearTimeout(delayedTimeoutId);
         }
       };
     }
-  }, [session.path, settings.recentFiles, sidebarOpen]);
+  }, [mobileSidebarOpen, mobileViewport, session.path, settings.recentFiles]);
 
   const banner = (() => {
     if (session.conflictKind === "missing") {
@@ -736,6 +768,10 @@ function App({ dependencies }: AppProps) {
   const drawerRecentCountLabel = `${settings.recentFiles.length} recent ${
     settings.recentFiles.length === 1 ? "file" : "files"
   }`;
+  const sidebarToggleLabel =
+    sidebarVisible && !mobileViewport ? "Collapse sidebar" : "Open recent files";
+  const sidebarToggleText = sidebarVisible && !mobileViewport ? "Hide" : "Recent";
+  const showSidebarTitlebarPane = sidebarVisible && !mobileViewport;
 
   return (
     <>
@@ -743,91 +779,168 @@ function App({ dependencies }: AppProps) {
         {liveStatus}
       </div>
 
-      <div className="app-shell">
-        {sidebarOpen ? (
-          <>
-            <button
-              aria-label="Close file drawer"
-              className="drawer-scrim"
-              onClick={() => {
-                closeSidebar();
-              }}
-              type="button"
-            />
+      <div
+        className={`app-shell ${sidebarVisible ? "has-visible-sidebar" : "is-sidebar-collapsed"} ${
+          mobileViewport ? "is-mobile-viewport" : ""
+        } ${isMacWindow ? "is-macos" : ""}`}
+        style={
+          isMacWindow
+            ? ({
+                "--mac-window-controls-width": `${MAC_WINDOW_CONTROLS_RESERVED_WIDTH}px`,
+              } as CSSProperties)
+            : undefined
+        }
+      >
+        {mobileViewport && mobileSidebarOpen ? (
+          <button
+            aria-label="Close recent files"
+            className="sidebar-scrim"
+            onClick={() => {
+              closeMobileSidebar();
+            }}
+            type="button"
+          />
+        ) : null}
 
-            <aside
-              aria-describedby="drawer-caption"
-              aria-labelledby="drawer-title"
-              aria-modal="true"
-              className="drawer is-open"
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  closeSidebar();
-                  return;
-                }
+        <header className="app-titlebar">
+          {showSidebarTitlebarPane ? (
+            <div className="app-titlebar-sidebar-pane">
+              <div
+                aria-hidden="true"
+                className="app-titlebar-window-gap"
+                data-tauri-drag-region={isMacWindow ? true : undefined}
+              />
+              <div className="app-titlebar-sidebar-drag" data-tauri-drag-region />
+              <button
+                aria-expanded={sidebarVisible}
+                aria-haspopup={mobileViewport ? "dialog" : undefined}
+                aria-label={sidebarToggleLabel}
+                className="toolbar-button"
+                onClick={(event) => {
+                  if (sidebarVisible && !mobileViewport) {
+                    collapseSidebar();
+                    return;
+                  }
 
-                trapFocusWithin(event, drawerRef.current);
-              }}
-              ref={drawerRef}
-              role="dialog"
-            >
-              <div className="drawer-header">
-                <div>
-                  <div className="drawer-title" id="drawer-title">
-                    Recent
-                  </div>
-                  <div className="drawer-caption" id="drawer-caption">
-                    {drawerRecentCountLabel}
-                  </div>
-                </div>
+                  openSidebar(event.currentTarget);
+                }}
+                ref={sidebarToggleRef}
+                type="button"
+              >
+                {sidebarToggleText}
+              </button>
+            </div>
+          ) : null}
+
+          <div className="app-titlebar-workspace-pane">
+            <div className="app-titlebar-workspace-main">
+              {!showSidebarTitlebarPane ? (
                 <button
-                  className="toolbar-button subtle-button"
-                  onClick={() => {
-                    closeSidebar();
+                  aria-expanded={sidebarVisible}
+                  aria-haspopup={mobileViewport ? "dialog" : undefined}
+                  aria-label={sidebarToggleLabel}
+                  className="toolbar-button"
+                  onClick={(event) => {
+                    if (sidebarVisible && !mobileViewport) {
+                      collapseSidebar();
+                      return;
+                    }
+
+                    openSidebar(event.currentTarget);
                   }}
-                  ref={drawerCloseButtonRef}
+                  ref={sidebarToggleRef}
                   type="button"
                 >
-                  Close
+                  {sidebarToggleText}
                 </button>
+              ) : null}
+              <div className="document-heading" data-tauri-drag-region>
+                <span className="document-label">Document</span>
+                <h1 className="document-title">{session.displayName}</h1>
               </div>
+              <div className="app-titlebar-workspace-drag" data-tauri-drag-region />
+            </div>
 
-              <div className="drawer-actions">
+            <div className="app-titlebar-actions" role="toolbar" aria-label="Editor actions">
+              <div className="document-header-actions">
                 <button
                   className="toolbar-button"
                   onClick={() => {
-                    closeSidebar();
                     void requestNewDraft();
                   }}
-                  ref={drawerNewButtonRef}
                   type="button"
                 >
                   New
                 </button>
                 <button
                   className="toolbar-button"
-                  onClick={() => {
-                    closeSidebar();
-                    void openFileDialog();
-                  }}
+                  onClick={() => void openFileDialog()}
                   type="button"
                 >
                   Open
                 </button>
                 <button
                   className="toolbar-button"
-                  onClick={() => {
-                    closeSidebar();
-                    void saveAsDialog();
-                  }}
+                  onClick={() => void saveCurrent()}
+                  type="button"
+                >
+                  Save
+                </button>
+                <button
+                  className="toolbar-button"
+                  onClick={() => void saveAsDialog()}
                   type="button"
                 >
                   Save As
                 </button>
+                <ModeToggle mode={session.mode} onChange={handleModeChange} />
+                <span className={`status-indicator ${session.dirty ? "is-dirty" : ""}`}>
+                  {statusLabel}
+                </span>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <div className="app-content">
+          {sidebarVisible ? (
+            <aside
+              aria-label="Recent files"
+              aria-modal={mobileViewport ? true : undefined}
+              className={`app-sidebar ${mobileViewport ? "is-overlay" : ""}`}
+              onKeyDown={(event) => {
+                if (mobileViewport && event.key === "Escape") {
+                  event.preventDefault();
+                  closeMobileSidebar();
+                }
+              }}
+              role={mobileViewport ? "dialog" : "complementary"}
+            >
+              <div className="sidebar-header">
+                <div className="sidebar-heading">
+                  <div className="sidebar-title">Recent</div>
+                  <div className="sidebar-caption">{drawerRecentCountLabel}</div>
+                </div>
+
+                {mobileViewport ? (
+                  <button
+                    aria-label="Close recent files"
+                    className="toolbar-button subtle-button"
+                    onClick={() => {
+                      closeMobileSidebar();
+                    }}
+                    type="button"
+                  >
+                    Close
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="sidebar-toolbar">
                 <button
                   className="toolbar-button subtle-button"
                   onClick={() => void refreshSettings()}
+                  ref={sidebarRefreshButtonRef}
                   type="button"
                 >
                   Refresh
@@ -843,7 +956,9 @@ function App({ dependencies }: AppProps) {
                       className={`recent-item ${session.path === entry.path ? "is-active" : ""}`}
                       key={entry.path}
                       onClick={() => {
-                        closeSidebar();
+                        if (mobileViewport) {
+                          closeMobileSidebar();
+                        }
                         void requestOpenPath(entry.path);
                       }}
                       ref={(element) => {
@@ -860,88 +975,47 @@ function App({ dependencies }: AppProps) {
                 )}
               </div>
             </aside>
-          </>
-        ) : null}
+          ) : null}
 
-        <main className="workspace">
-          <header className="topbar">
-            <div className="topbar-leading">
-              <button
-                aria-haspopup="dialog"
-                aria-expanded={sidebarOpen}
-                aria-label="Open file drawer"
-                className="toolbar-button"
-                onClick={(event) => {
-                  drawerReturnFocusRef.current = event.currentTarget;
-                  blurEditorSurfaces();
-                  setSidebarOpen(true);
-                }}
-                ref={drawerToggleRef}
-                type="button"
-              >
-                Files
-              </button>
-              <div className="topbar-title">
-                <span className="app-name">downmark</span>
-                <strong>{session.displayName}</strong>
+          <main className="workspace">
+            <div className="workspace-top">
+              <div className="meta-row">
+                <span className="document-path">{session.path ?? "Scratch note"}</span>
+                <span className="meta-inline">
+                  {session.newlineStyle.toUpperCase()} . {session.mode === "rich" ? "Rich" : "Raw"}
+                </span>
               </div>
             </div>
 
-            <div className="topbar-actions" role="toolbar" aria-label="Editor actions">
-              <button
-                className="toolbar-button"
-                onClick={() => void openFileDialog()}
-                type="button"
-              >
-                Open
-              </button>
-              <button
-                className="toolbar-button"
-                onClick={() => void saveCurrent()}
-                type="button"
-              >
-                Save
-              </button>
-              <ModeToggle mode={session.mode} onChange={handleModeChange} />
-              <span className={`status-indicator ${session.dirty ? "is-dirty" : ""}`}>
-                {statusLabel}
-              </span>
+            <div className="workspace-body">
+              {banner ? (
+                <div className={`banner tone-${banner.tone}`} role="alert">
+                  {banner.text}
+                </div>
+              ) : null}
+
+              <section className="editor-shell">
+                {session.mode === "rich" ? (
+                  <RichEditorAdapter
+                    autoFocus={focusTarget === "rich"}
+                    content={session.richDoc}
+                    contentVersion={session.richVersion}
+                    onDocumentChange={handleRichChange}
+                    onRequestLink={promptForLink}
+                    ref={richEditorRef}
+                  />
+                ) : (
+                  <RawEditorSurface
+                    autoFocus={focusTarget === "raw"}
+                    onChange={handleRawChange}
+                    ref={rawEditorRef}
+                    value={session.canonicalMarkdown}
+                  />
+                )}
+              </section>
             </div>
-          </header>
-
-          <div className="meta-row">
-            <span className="document-path">{session.path ?? "Scratch note"}</span>
-            <span className="meta-inline">
-              {session.newlineStyle.toUpperCase()} . {session.mode === "rich" ? "Rich" : "Raw"}
-            </span>
-          </div>
-
-          {banner ? (
-            <div className={`banner tone-${banner.tone}`} role="alert">
-              {banner.text}
-            </div>
-          ) : null}
-
-          <section className="editor-shell">
-            {session.mode === "rich" ? (
-              <RichEditorAdapter
-                autoFocus={focusTarget === "rich"}
-                content={session.richDoc}
-                contentVersion={session.richVersion}
-                onDocumentChange={handleRichChange}
-                onRequestLink={promptForLink}
-                ref={richEditorRef}
-              />
-            ) : (
-              <RawEditorSurface
-                autoFocus={focusTarget === "raw"}
-                onChange={handleRawChange}
-                ref={rawEditorRef}
-                value={session.canonicalMarkdown}
-              />
-            )}
-          </section>
-        </main>
+          </main>
+        </div>
       </div>
 
       <PromptDialog

@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  memo,
   useEffect,
   useEffectEvent,
   useImperativeHandle,
@@ -34,7 +35,7 @@ interface RichEditorAdapterProps {
   onRequestLink: () => Promise<string | null>;
 }
 
-export const RichEditorAdapter = forwardRef<
+const RichEditorAdapterInner = forwardRef<
   RichEditorAdapterHandle,
   RichEditorAdapterProps
 >(function RichEditorAdapter(
@@ -66,8 +67,8 @@ export const RichEditorAdapter = forwardRef<
       return;
     }
 
-    editor.commands.setContent(content);
-  }, [content, contentVersion, editor]);
+    editor.commands.setContent(content, { emitUpdate: false });
+  }, [contentVersion, editor]);
 
   useEffect(() => {
     if (!autoFocus || !editor) {
@@ -82,7 +83,7 @@ export const RichEditorAdapter = forwardRef<
     ref,
     () => ({
       setContent(doc) {
-        editor?.commands.setContent(doc);
+        editor?.commands.setContent(doc, { emitUpdate: false });
       },
       getPendingDoc() {
         return editor?.getJSON() ?? null;
@@ -155,3 +156,12 @@ export const RichEditorAdapter = forwardRef<
     </div>
   );
 });
+
+export const RichEditorAdapter = memo(
+  RichEditorAdapterInner,
+  (previousProps, nextProps) =>
+    previousProps.autoFocus === nextProps.autoFocus &&
+    previousProps.contentVersion === nextProps.contentVersion &&
+    previousProps.onDocumentChange === nextProps.onDocumentChange &&
+    previousProps.onRequestLink === nextProps.onRequestLink,
+);
