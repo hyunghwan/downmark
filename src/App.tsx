@@ -1,9 +1,9 @@
 import {
   useEffect,
   useEffectEvent,
+  useMemo,
   useRef,
   useState,
-  type CSSProperties,
 } from "react";
 import { message, open, save } from "@tauri-apps/plugin-dialog";
 
@@ -20,17 +20,30 @@ import {
   syncRichFromMarkdown,
 } from "./features/documents/file-session-manager";
 import { MarkdownGateway } from "./features/documents/markdown-gateway";
-import type { AppSettings, EditorMode, FileSession } from "./features/documents/types";
+import type {
+  AppSettings,
+  EditorMode,
+  FileSession,
+} from "./features/documents/types";
 import { ModeToggle } from "./features/editor/ModeToggle";
 import { RawEditorSurface } from "./features/editor/RawEditorSurface";
 import {
   RichEditorAdapter,
+  type EditorImageAsset,
   type RichEditorAdapterHandle,
 } from "./features/editor/RichEditorAdapter";
+import { getLocaleMessages } from "./features/i18n/messages";
+import {
+  getSystemLocale,
+  resolveLocaleFromPreference,
+  type SupportedLocale,
+} from "./features/i18n/locale";
 import { hasTauriRuntime } from "./features/runtime/tauri-runtime";
 import { ShellIntegration } from "./features/shell/shell-integration";
 
-type DeferredAction = { kind: "open-path"; path: string } | { kind: "new-draft" };
+type DeferredAction =
+  | { kind: "open-path"; path: string; mode: EditorMode }
+  | { kind: "new-draft"; mode: EditorMode };
 type PromptState =
   | { kind: "none" }
   | { kind: "unsaved"; action: DeferredAction }
@@ -38,10 +51,14 @@ type PromptState =
 type DialogResult = string | string[] | null;
 type EditorFocusTarget = "raw" | "rich" | null;
 type SessionUpdate = FileSession | ((current: FileSession) => FileSession);
+type RawImageSelection = { end: number; start: number };
 
 export interface DialogPort {
-  openFile: () => Promise<DialogResult>;
-  saveFile: (defaultPath: string) => Promise<DialogResult>;
+  openFile: (filters: Array<{ extensions: string[]; name: string }>) => Promise<DialogResult>;
+  saveFile: (
+    defaultPath: string,
+    filters: Array<{ extensions: string[]; name: string }>,
+  ) => Promise<DialogResult>;
   showMessage: (
     body: string,
     options: { title: string; kind: "error" | "info" | "warning" },
@@ -57,9 +74,12 @@ export interface AppDependencies {
     | "loadSettings"
     | "normalize"
     | "pathExists"
+    | "prepareImageAsset"
     | "recordRecentFile"
+    | "relocateLocalImageLinks"
     | "removeRecentFile"
     | "save"
+    | "setLanguagePreference"
     | "toRich"
   > & { destroy?: () => void };
   shell: Pick<
@@ -68,22 +88,19 @@ export interface AppDependencies {
   >;
   dialogs: DialogPort;
   fileStatusPollMs?: number;
-  promptForLink: () => Promise<string | null>;
+  promptForLink: (prompt: string) => Promise<string | null>;
 }
 
 interface AppProps {
   dependencies?: AppDependencies;
 }
 
-const MARKDOWN_FILTERS = [
-  {
-    name: "Markdown",
-    extensions: ["md", "markdown", "mdown"],
-  },
-];
-const MOBILE_SIDEBAR_MAX_WIDTH = 760;
-const MAC_WINDOW_CONTROLS_RESERVED_WIDTH = 110;
-const EMPTY_SETTINGS: AppSettings = { recentFiles: [] };
+const MARKDOWN_EXTENSIONS = ["md", "markdown", "mdown"];
+const EMPTY_SETTINGS: AppSettings = {
+  recentFiles: [],
+  languagePreference: "system",
+  locale: resolveLocaleFromPreference("system", getSystemLocale()),
+};
 
 interface ScrollSnapshot {
   ratio: number;
@@ -107,6 +124,22 @@ interface SurfaceRestoreState {
   scroll: ScrollSnapshot | null;
 }
 
+function createTopSurfaceRestoreState(mode: EditorMode): SurfaceRestoreState {
+  return {
+    mode,
+    rawSelection:
+      mode === "raw"
+        ? {
+            start: 0,
+            end: 0,
+            direction: "none",
+          }
+        : null,
+    richSelection: mode === "rich" ? { from: 1, to: 1 } : null,
+    scroll: { ratio: 0 },
+  };
+}
+
 interface DownmarkTestBridge {
   applyRichCommand: (commandId: string) => Promise<boolean>;
   applySlashCommand: (commandId: string) => Promise<boolean>;
@@ -128,8 +161,8 @@ function isStringPath(value: string | string[] | null): value is string {
   return typeof value === "string";
 }
 
-function formatLastOpened(timestamp: number) {
-  return new Intl.DateTimeFormat(undefined, {
+function formatLastOpened(timestamp: number, locale: SupportedLocale) {
+  return new Intl.DateTimeFormat(getLocaleMessages(locale).intlLocale, {
     month: "short",
     day: "numeric",
     hour: "numeric",
@@ -137,12 +170,118 @@ function formatLastOpened(timestamp: number) {
   }).format(timestamp);
 }
 
-function isMobileViewport() {
-  return window.innerWidth <= MOBILE_SIDEBAR_MAX_WIDTH;
+function createMarkdownFilters(name: string) {
+  return [
+    {
+      name,
+      extensions: MARKDOWN_EXTENSIONS,
+    },
+  ];
 }
 
-function isMacWindowPlatform() {
-  return /mac/i.test(navigator.userAgent) || /mac/i.test(navigator.platform);
+function inferAltFromReference(reference: string) {
+  const normalized = reference.trim().replace(/[\\/]+$/, "");
+  if (!normalized) {
+    return "image";
+  }
+
+  const lastSegment = normalized.split(/[\\/]/).pop() ?? normalized;
+  let decodedSegment = lastSegment;
+  try {
+    decodedSegment = decodeURIComponent(lastSegment);
+  } catch {
+    decodedSegment = lastSegment;
+  }
+
+  const baseName = decodedSegment.replace(/\.[^.]+$/, "").trim();
+
+  return baseName || "image";
+}
+
+function isRemoteImageUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isAbsoluteFilePath(value: string) {
+  return (
+    value.startsWith("/") ||
+    value.startsWith("\\\\") ||
+    /^[A-Za-z]:[\\/]/.test(value)
+  );
+}
+
+function resolvePromptedFilePath(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("file://")) {
+    return trimmed;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "file:") {
+      return trimmed;
+    }
+
+    let pathname = decodeURIComponent(url.pathname);
+    if (/^\/[A-Za-z]:\//.test(pathname)) {
+      pathname = pathname.slice(1);
+    }
+
+    return pathname;
+  } catch {
+    return trimmed;
+  }
+}
+
+function inferMimeTypeFromFile(file: File) {
+  if (file.type) {
+    return file.type;
+  }
+
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  switch (extension) {
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    case "svg":
+      return "image/svg+xml";
+    case "bmp":
+      return "image/bmp";
+    case "tif":
+    case "tiff":
+      return "image/tiff";
+    case "ico":
+      return "image/x-icon";
+    case "avif":
+      return "image/avif";
+    default:
+      return null;
+  }
+}
+
+function createImageMarkdown(asset: EditorImageAsset) {
+  return `![${asset.alt}](${asset.src})`;
+}
+
+function replaceSelection(value: string, selection: RawImageSelection, inserted: string) {
+  const start = Math.max(0, Math.min(selection.start, value.length));
+  const end = Math.max(start, Math.min(selection.end, value.length));
+
+  return {
+    nextValue: `${value.slice(0, start)}${inserted}${value.slice(end)}`,
+    nextSelectionStart: start + inserted.length,
+  };
 }
 
 function SidebarToggleIcon({ collapsed }: { collapsed: boolean }) {
@@ -153,19 +292,15 @@ function SidebarToggleIcon({ collapsed }: { collapsed: boolean }) {
       fill="none"
       viewBox="0 0 16 16"
     >
-      <rect
-        height="11"
-        rx="2.25"
+      <path
+        d="M6 4.25h6M6 8h4.75M6 11.75h6"
         stroke="currentColor"
+        strokeLinecap="round"
         strokeWidth="1.25"
-        width="13"
-        x="1.5"
-        y="2.5"
       />
-      <path d="M5.5 3.5v9" stroke="currentColor" strokeLinecap="round" strokeWidth="1.25" />
       {collapsed ? (
         <path
-          d="M8.25 8h2.5M9.75 6.25L11.5 8l-1.75 1.75"
+          d="M1.75 8h2.5M3.25 6.25L5 8 3.25 9.75"
           stroke="currentColor"
           strokeLinecap="round"
           strokeLinejoin="round"
@@ -173,7 +308,7 @@ function SidebarToggleIcon({ collapsed }: { collapsed: boolean }) {
         />
       ) : (
         <path
-          d="M10.75 8h-2.5M9.25 6.25L7.5 8l1.75 1.75"
+          d="M4.25 8h-2.5M2.75 6.25L1 8l1.75 1.75"
           stroke="currentColor"
           strokeLinecap="round"
           strokeLinejoin="round"
@@ -194,16 +329,16 @@ export function createDefaultAppDependencies(): AppDependencies {
     shell,
     dialogs: desktopRuntime
       ? {
-          openFile() {
+          openFile(filters) {
             return open({
               multiple: false,
-              filters: MARKDOWN_FILTERS,
+              filters,
             });
           },
-          saveFile(defaultPath: string) {
+          saveFile(defaultPath: string, filters) {
             return save({
               defaultPath,
-              filters: MARKDOWN_FILTERS,
+              filters,
             });
           },
           async showMessage(body, options) {
@@ -211,18 +346,18 @@ export function createDefaultAppDependencies(): AppDependencies {
           },
         }
       : {
-          async openFile() {
+          async openFile(_filters) {
             return null;
           },
-          async saveFile() {
+          async saveFile(_defaultPath, _filters) {
             return null;
           },
           async showMessage(body, options) {
             console.info(`${options.title}: ${body}`);
           },
         },
-    async promptForLink() {
-      const href = window.prompt("Enter a URL");
+    async promptForLink(prompt) {
+      const href = window.prompt(prompt);
       return href?.trim() ? href.trim() : null;
     },
   };
@@ -235,32 +370,52 @@ function App({ dependencies }: AppProps) {
   const { dialogs, gateway, promptForLink, shell } = appDependencies;
   const pollIntervalMs = appDependencies.fileStatusPollMs ?? 3000;
 
+  const [locale, setLocale] = useState<SupportedLocale>(EMPTY_SETTINGS.locale);
   const [session, setSession] = useState<FileSession>(() => createDraftSession());
   const [settings, setSettings] = useState<AppSettings>(EMPTY_SETTINGS);
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
+  const [initialized, setInitialized] = useState(false);
   const [promptState, setPromptState] = useState<PromptState>({ kind: "none" });
-  const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(false);
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [mobileViewport, setMobileViewport] = useState(() => isMobileViewport());
-  const [isMacWindow] = useState(() => isMacWindowPlatform());
+  const [recentDrawerOpen, setRecentDrawerOpen] = useState(false);
   const [focusTarget, setFocusTarget] = useState<EditorFocusTarget>(null);
 
+  const localeRef = useRef(locale);
   const sessionRef = useRef(session);
   const promptStateRef = useRef(promptState);
   const editorViewportRef = useRef<HTMLElement | null>(null);
   const rawEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const richEditorRef = useRef<RichEditorAdapterHandle | null>(null);
+  const recentDrawerRef = useRef<HTMLElement | null>(null);
   const sidebarReturnFocusRef = useRef<HTMLElement | null>(null);
   const sidebarToggleRef = useRef<HTMLButtonElement | null>(null);
-  const sidebarRefreshButtonRef = useRef<HTMLButtonElement | null>(null);
   const recentItemRefs = useRef<Map<string, HTMLButtonElement | null>>(new Map());
-  const mobileSidebarWasOpenRef = useRef(false);
+  const recentDrawerWasOpenRef = useRef(false);
   const shouldRestoreSidebarFocusRef = useRef(false);
   const rawSelectionRef = useRef<RawSelectionSnapshot | null>(null);
   const richSelectionRef = useRef<RichSelectionSnapshot | null>(null);
   const pendingSurfaceRestoreRef = useRef<SurfaceRestoreState | null>(null);
-  const sidebarVisible = mobileViewport ? mobileSidebarOpen : !desktopSidebarCollapsed;
 
+  const messages = useMemo(() => getLocaleMessages(locale), [locale]);
+  const markdownFilters = useMemo(
+    () => createMarkdownFilters(messages.fileDialog.markdownFilterName),
+    [messages.fileDialog.markdownFilterName],
+  );
+  const richEditorMessages = useMemo(
+    () => ({
+      imagePrompt: messages.prompts.image,
+      linkPrompt: messages.prompts.link,
+      loadingLabel: messages.editor.richEditorLoading,
+      richEditorAriaLabel: messages.editor.richEditorAriaLabel,
+    }),
+    [
+      messages.prompts.image,
+      messages.editor.richEditorAriaLabel,
+      messages.editor.richEditorLoading,
+      messages.prompts.link,
+    ],
+  );
+
+  localeRef.current = locale;
   sessionRef.current = session;
   promptStateRef.current = promptState;
 
@@ -328,6 +483,40 @@ function App({ dependencies }: AppProps) {
     richSelectionRef.current = richEditorRef.current?.getSelectionRange() ?? null;
   });
 
+  const applySettings = useEffectEvent(
+    (nextSettings: AppSettings, options?: { preserveEditorState?: boolean }) => {
+      const currentMode = sessionRef.current.mode;
+
+      if (options?.preserveEditorState && nextSettings.locale !== localeRef.current) {
+        const viewportSnapshot = captureViewportSnapshot();
+
+        if (currentMode === "rich") {
+          rememberRichSelection();
+          pendingSurfaceRestoreRef.current = {
+            mode: "rich",
+            rawSelection: null,
+            richSelection: richSelectionRef.current,
+            scroll: viewportSnapshot,
+          };
+        } else {
+          rememberRawSelection();
+          pendingSurfaceRestoreRef.current = {
+            mode: "raw",
+            rawSelection: rawSelectionRef.current,
+            richSelection: null,
+            scroll: viewportSnapshot,
+          };
+        }
+
+        setFocusTarget(currentMode);
+      }
+
+      localeRef.current = nextSettings.locale;
+      setLocale(nextSettings.locale);
+      setSettings(nextSettings);
+    },
+  );
+
   const refreshSettings = useEffectEvent(async () => {
     const loadedSettings = await gateway.loadSettings();
     const existingRecentFiles = await Promise.all(
@@ -349,28 +538,26 @@ function App({ dependencies }: AppProps) {
       await gateway.removeRecentFile(path);
     }
 
-    setSettings({ recentFiles: visibleRecentFiles });
+    return {
+      ...loadedSettings,
+      recentFiles: visibleRecentFiles,
+    } satisfies AppSettings;
   });
 
-  const openPath = useEffectEvent(async (path: string) => {
-    setBusyLabel("Opening");
-    pendingSurfaceRestoreRef.current = {
-      mode: "rich",
-      rawSelection: null,
-      richSelection: null,
-      scroll: { ratio: 0 },
-    };
+  const openPath = useEffectEvent(async (path: string, mode: EditorMode) => {
+    setBusyLabel(messages.busy.opening);
+    pendingSurfaceRestoreRef.current = createTopSurfaceRestoreState(mode);
 
     try {
       const file = await gateway.load(path);
       const richDoc = gateway.toRich(file.markdown);
-      const nextSession = openFileSession(file, richDoc, "rich");
+      const nextSession = openFileSession(file, richDoc, mode);
       updateSession(nextSession);
-      setSettings(await gateway.recordRecentFile(path));
-      setFocusTarget("rich");
+      applySettings(await gateway.recordRecentFile(path));
+      setFocusTarget(mode);
     } catch (error) {
-      await dialogs.showMessage(`Unable to open file.\n\n${String(error)}`, {
-        title: "downmark",
+      await dialogs.showMessage(messages.errors.openFailed(String(error)), {
+        title: messages.appTitle,
         kind: "error",
       });
     } finally {
@@ -379,7 +566,7 @@ function App({ dependencies }: AppProps) {
   });
 
   const openFileDialog = useEffectEvent(async () => {
-    const result = await dialogs.openFile();
+    const result = await dialogs.openFile(markdownFilters);
 
     if (isStringPath(result)) {
       await requestOpenPath(result);
@@ -399,7 +586,10 @@ function App({ dependencies }: AppProps) {
 
     let targetPath = pathOverride;
     if (!targetPath && !latestSession.path) {
-      const result = await dialogs.saveFile("Untitled.md");
+      const result = await dialogs.saveFile(
+        messages.fileDialog.untitledFileName,
+        markdownFilters,
+      );
 
       if (!isStringPath(result)) {
         return false;
@@ -409,13 +599,33 @@ function App({ dependencies }: AppProps) {
     }
 
     setBusyLabel(
-      targetPath && targetPath !== latestSession.path ? "Saving as" : "Saving",
+      targetPath && targetPath !== latestSession.path
+        ? messages.busy.savingAs
+        : messages.busy.saving,
     );
 
     try {
-      const result = await gateway.save(latestSession, targetPath);
-      updateSession((current) => markSaved(current, result));
-      setSettings(await gateway.recordRecentFile(result.path));
+      let sessionToSave = latestSession;
+      if (targetPath && targetPath !== latestSession.path) {
+        const relocatedMarkdown = await gateway.relocateLocalImageLinks(
+          latestSession.canonicalMarkdown,
+          latestSession.path,
+          targetPath,
+        );
+
+        if (relocatedMarkdown !== latestSession.canonicalMarkdown) {
+          sessionToSave = {
+            ...latestSession,
+            canonicalMarkdown: relocatedMarkdown,
+            richDoc: gateway.toRich(relocatedMarkdown),
+            richVersion: latestSession.richVersion + 1,
+          };
+        }
+      }
+
+      const result = await gateway.save(sessionToSave, targetPath);
+      updateSession(markSaved(sessionToSave, result));
+      applySettings(await gateway.recordRecentFile(result.path));
       return true;
     } catch (error) {
       const errorMessage = String(error);
@@ -425,10 +635,10 @@ function App({ dependencies }: AppProps) {
 
       await dialogs.showMessage(
         errorMessage === "stale-write"
-          ? "The file changed on disk before save completed. Review the on-disk version or use Save As."
-          : `Save failed.\n\n${errorMessage}`,
+          ? messages.errors.staleWrite
+          : messages.errors.saveFailed(errorMessage),
         {
-          title: "downmark",
+          title: messages.appTitle,
           kind: "error",
         },
       );
@@ -440,27 +650,158 @@ function App({ dependencies }: AppProps) {
   });
 
   const saveAsDialog = useEffectEvent(async () => {
-    const result = await dialogs.saveFile(sessionRef.current.path ?? "Untitled.md");
+    const result = await dialogs.saveFile(
+      sessionRef.current.path ?? messages.fileDialog.untitledFileName,
+      markdownFilters,
+    );
 
     if (isStringPath(result)) {
       await saveCurrent(result);
     }
   });
 
+  const ensureSavedDocumentPath = useEffectEvent(async () => {
+    if (sessionRef.current.path) {
+      return sessionRef.current.path;
+    }
+
+    const saved = await saveCurrent();
+    return saved ? sessionRef.current.path : null;
+  });
+
+  const showImageAssetError = useEffectEvent(async (error: unknown) => {
+    await dialogs.showMessage(messages.errors.imageAssetFailed(String(error)), {
+      title: messages.appTitle,
+      kind: "error",
+    });
+  });
+
+  const prepareImageAssetFromFile = useEffectEvent(async (file: File) => {
+    try {
+      const sourcePath = (
+        file as File & {
+          path?: string;
+        }
+      ).path;
+      const documentPath = await ensureSavedDocumentPath();
+      if (!documentPath) {
+        return null;
+      }
+
+      if (sourcePath && isAbsoluteFilePath(sourcePath)) {
+        const prepared = await gateway.prepareImageAsset({
+          documentPath,
+          sourcePath,
+        });
+
+        return {
+          alt: prepared.alt,
+          src: prepared.relativePath,
+        } satisfies EditorImageAsset;
+      }
+
+      const mimeType = inferMimeTypeFromFile(file);
+      if (!mimeType) {
+        throw new Error(`Unsupported image type: ${file.type || file.name || "unknown"}`);
+      }
+
+      const prepared = await gateway.prepareImageAsset({
+        documentPath,
+        bytes: new Uint8Array(await file.arrayBuffer()),
+        mimeType,
+      });
+
+      return {
+        alt: file.name ? inferAltFromReference(file.name) : prepared.alt,
+        src: prepared.relativePath,
+      } satisfies EditorImageAsset;
+    } catch (error) {
+      await showImageAssetError(error);
+      return null;
+    }
+  });
+
+  const requestImageFromPrompt = useEffectEvent(async (prompt: string) => {
+    const value = await promptForLink(prompt);
+    if (!value?.trim()) {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    if (isRemoteImageUrl(trimmed)) {
+      const url = new URL(trimmed);
+      return {
+        alt: inferAltFromReference(url.pathname || trimmed),
+        src: trimmed,
+      } satisfies EditorImageAsset;
+    }
+
+    const sourcePath = resolvePromptedFilePath(trimmed);
+    if (!isAbsoluteFilePath(sourcePath)) {
+      await showImageAssetError(messages.errors.invalidImageSource);
+      return null;
+    }
+
+    try {
+      const documentPath = await ensureSavedDocumentPath();
+      if (!documentPath) {
+        return null;
+      }
+
+      const prepared = await gateway.prepareImageAsset({
+        documentPath,
+        sourcePath,
+      });
+
+      return {
+        alt: prepared.alt,
+        src: prepared.relativePath,
+      } satisfies EditorImageAsset;
+    } catch (error) {
+      await showImageAssetError(error);
+      return null;
+    }
+  });
+
+  const insertRawImageAtSelection = useEffectEvent(
+    (selection: RawImageSelection, asset: EditorImageAsset) => {
+      const { nextSelectionStart, nextValue } = replaceSelection(
+        sessionRef.current.canonicalMarkdown,
+        selection,
+        createImageMarkdown(asset),
+      );
+
+      updateSession((current) =>
+        replaceRawMarkdown(current, gateway.normalize(nextValue, { newlineStyle: "lf" })),
+      );
+
+      window.requestAnimationFrame(() => {
+        rawEditorRef.current?.focus();
+        rawEditorRef.current?.setSelectionRange(nextSelectionStart, nextSelectionStart);
+      });
+    },
+  );
+
+  const handleRawImageFileInsert = useEffectEvent(
+    async (file: File, selection: RawImageSelection) => {
+      const asset = await prepareImageAssetFromFile(file);
+      if (!asset) {
+        return;
+      }
+
+      insertRawImageAtSelection(selection, asset);
+    },
+  );
+
   const runDeferredAction = useEffectEvent(async (action: DeferredAction) => {
     if (action.kind === "open-path") {
-      await openPath(action.path);
+      await openPath(action.path, action.mode);
       return;
     }
 
-    pendingSurfaceRestoreRef.current = {
-      mode: "rich",
-      rawSelection: null,
-      richSelection: null,
-      scroll: { ratio: 0 },
-    };
-    updateSession(createDraftSession("rich"));
-    setFocusTarget("rich");
+    pendingSurfaceRestoreRef.current = createTopSurfaceRestoreState(action.mode);
+    updateSession(createDraftSession(action.mode));
+    setFocusTarget(action.mode);
   });
 
   const requestOpenPath = useEffectEvent(async (path: string) => {
@@ -477,12 +818,12 @@ function App({ dependencies }: AppProps) {
     if (latestSession.dirty) {
       setPromptState({
         kind: "unsaved",
-        action: { kind: "open-path", path },
+        action: { kind: "open-path", path, mode: latestSession.mode },
       });
       return;
     }
 
-    await openPath(path);
+    await openPath(path, latestSession.mode);
   });
 
   const requestNewDraft = useEffectEvent(async () => {
@@ -499,19 +840,14 @@ function App({ dependencies }: AppProps) {
     if (latestSession.dirty) {
       setPromptState({
         kind: "unsaved",
-        action: { kind: "new-draft" },
+        action: { kind: "new-draft", mode: latestSession.mode },
       });
       return;
     }
 
-    updateSession(createDraftSession("rich"));
-    pendingSurfaceRestoreRef.current = {
-      mode: "rich",
-      rawSelection: null,
-      richSelection: null,
-      scroll: { ratio: 0 },
-    };
-    setFocusTarget("rich");
+    updateSession(createDraftSession(latestSession.mode));
+    pendingSurfaceRestoreRef.current = createTopSurfaceRestoreState(latestSession.mode);
+    setFocusTarget(latestSession.mode);
   });
 
   const blurEditorSurfaces = useEffectEvent(() => {
@@ -535,39 +871,33 @@ function App({ dependencies }: AppProps) {
     });
   });
 
-  const openSidebar = useEffectEvent((returnFocusTarget?: HTMLElement | null) => {
+  const openRecentDrawer = useEffectEvent((returnFocusTarget?: HTMLElement | null) => {
     sidebarReturnFocusRef.current = returnFocusTarget ?? null;
-
-    if (mobileViewport) {
-      blurEditorSurfaces();
-      setMobileSidebarOpen(true);
-      return;
-    }
-
-    setDesktopSidebarCollapsed(false);
+    blurEditorSurfaces();
+    setRecentDrawerOpen(true);
   });
 
-  const closeMobileSidebar = useEffectEvent(() => {
-    if (!mobileViewport) {
-      return;
-    }
-
+  const closeRecentDrawer = useEffectEvent(() => {
     blurEditorSurfaces();
     shouldRestoreSidebarFocusRef.current = true;
-    setMobileSidebarOpen(false);
+    setRecentDrawerOpen(false);
     restoreSidebarToggleFocus();
   });
 
-  const collapseSidebar = useEffectEvent(() => {
-    blurEditorSurfaces();
+  const handleRecentDrawerToggle = useEffectEvent(
+    (returnFocusTarget?: HTMLElement | null) => {
+      if (recentDrawerOpen) {
+        closeRecentDrawer();
+        return;
+      }
 
-    if (mobileViewport) {
-      shouldRestoreSidebarFocusRef.current = true;
-      setMobileSidebarOpen(false);
-      return;
-    }
+      openRecentDrawer(returnFocusTarget);
+    },
+  );
 
-    setDesktopSidebarCollapsed(true);
+  const requestOpenRecentPath = useEffectEvent(async (path: string) => {
+    closeRecentDrawer();
+    await requestOpenPath(path);
   });
 
   const syncSessionFromRichEditor = useEffectEvent(
@@ -613,7 +943,7 @@ function App({ dependencies }: AppProps) {
 
     if (status.kind === "missing") {
       updateSession((current) =>
-        markConflict(current, "missing", "The file was moved or deleted on disk."),
+        markConflict(current, "missing", messages.banners.missing),
       );
       return;
     }
@@ -623,7 +953,7 @@ function App({ dependencies }: AppProps) {
         markConflict(
           current,
           "externally-modified",
-          "The file changed on disk while you still have unsaved edits.",
+          messages.banners.externallyModified,
         ),
       );
       setPromptState({ kind: "external-modified" });
@@ -632,41 +962,11 @@ function App({ dependencies }: AppProps) {
 
     const file = await gateway.load(currentSession.path);
     const richDoc = gateway.toRich(file.markdown);
-    if (currentSession.mode === "rich") {
-      rememberRichSelection();
-    } else {
-      rememberRawSelection();
-    }
-    pendingSurfaceRestoreRef.current = {
-      mode: currentSession.mode,
-      rawSelection:
-        currentSession.mode === "raw" ? rawSelectionRef.current : null,
-      richSelection:
-        currentSession.mode === "rich" ? richSelectionRef.current : null,
-      scroll: captureViewportSnapshot(),
-    };
+    pendingSurfaceRestoreRef.current = createTopSurfaceRestoreState(currentSession.mode);
     updateSession((current) => applyReloadedDocument(current, file, richDoc));
-    setSettings(await gateway.recordRecentFile(file.path));
+    applySettings(await gateway.recordRecentFile(file.path));
     setFocusTarget(currentSession.mode);
   });
-
-  useEffect(() => {
-    const handleResize = () => {
-      setMobileViewport(isMobileViewport());
-    };
-
-    window.addEventListener("resize", handleResize);
-    return () => {
-      window.removeEventListener("resize", handleResize);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!mobileViewport) {
-      shouldRestoreSidebarFocusRef.current = false;
-      setMobileSidebarOpen(false);
-    }
-  }, [mobileViewport]);
 
   useEffect(() => {
     if (!session.path) {
@@ -778,14 +1078,14 @@ function App({ dependencies }: AppProps) {
     }
 
     if (currentPrompt.kind === "external-modified") {
-      if (!currentSession.path) {
-        return;
-      }
+        if (!currentSession.path) {
+          return;
+        }
 
-      if (actionId === "reload") {
-        await openPath(currentSession.path);
-        return;
-      }
+        if (actionId === "reload") {
+          await openPath(currentSession.path, currentSession.mode);
+          return;
+        }
 
       if (actionId === "save-as") {
         await saveAsDialog();
@@ -822,45 +1122,79 @@ function App({ dependencies }: AppProps) {
       case "set-raw-mode":
         handleModeChange("raw");
         break;
+      case "set-language-system":
+        applySettings(await gateway.setLanguagePreference("system"), {
+          preserveEditorState: true,
+        });
+        break;
+      case "set-language-en":
+        applySettings(await gateway.setLanguagePreference("en"), {
+          preserveEditorState: true,
+        });
+        break;
+      case "set-language-ko":
+        applySettings(await gateway.setLanguagePreference("ko"), {
+          preserveEditorState: true,
+        });
+        break;
+      case "set-language-es":
+        applySettings(await gateway.setLanguagePreference("es"), {
+          preserveEditorState: true,
+        });
+        break;
       default:
         break;
     }
   });
 
   useEffect(() => {
-    void refreshSettings();
-
     let unlistenOpen: (() => void) | null = null;
     let unlistenMenu: (() => void) | null = null;
-    void shell
-      .handleSecondaryOpen((paths) => {
+    let disposed = false;
+
+    void (async () => {
+      const nextSettings = await refreshSettings();
+      if (disposed) {
+        return;
+      }
+
+      applySettings(nextSettings);
+      setInitialized(true);
+
+      unlistenOpen = await shell.handleSecondaryOpen((paths) => {
         const nextPath = paths[0];
         if (nextPath) {
           void requestOpenPath(nextPath);
         }
-      })
-      .then((dispose) => {
-        unlistenOpen = dispose;
       });
-
-    void shell
-      .handleMenuAction((action) => {
-        void runMenuAction(action);
-      })
-      .then((dispose) => {
-        unlistenMenu = dispose;
-      });
-
-    void shell.handleInitialOpen().then((paths) => {
-      const firstPath = paths[0];
-      if (firstPath) {
-        void openPath(firstPath);
-      } else {
-        setFocusTarget("rich");
+      if (disposed) {
+        unlistenOpen?.();
+        return;
       }
-    });
+
+      unlistenMenu = await shell.handleMenuAction((action) => {
+        void runMenuAction(action);
+      });
+      if (disposed) {
+        unlistenMenu?.();
+        return;
+      }
+
+      const paths = await shell.handleInitialOpen();
+      if (disposed) {
+        return;
+      }
+
+        const firstPath = paths[0];
+        if (firstPath) {
+          void openPath(firstPath, sessionRef.current.mode);
+        } else {
+          setFocusTarget("rich");
+        }
+    })();
 
     return () => {
+      disposed = true;
       unlistenOpen?.();
       unlistenMenu?.();
     };
@@ -944,7 +1278,7 @@ function App({ dependencies }: AppProps) {
     return () => {
       window.cancelAnimationFrame(id);
     };
-  }, [focusTarget, restoreViewportSnapshot, session.mode, session.richVersion]);
+  }, [focusTarget, locale, restoreViewportSnapshot, session.mode, session.richVersion]);
 
   useEffect(() => {
     if (!navigator.webdriver) {
@@ -977,7 +1311,7 @@ function App({ dependencies }: AppProps) {
           await waitForPaint();
         }
 
-        const applied = richEditorRef.current?.applySlashCommand(commandId) ?? false;
+        const applied = (await richEditorRef.current?.applySlashCommand(commandId)) ?? false;
         await waitForPaint();
         return applied;
       },
@@ -1037,8 +1371,8 @@ function App({ dependencies }: AppProps) {
   }, [gateway, handleModeChange]);
 
   useEffect(() => {
-    if (mobileViewport && mobileSidebarOpen) {
-      mobileSidebarWasOpenRef.current = true;
+    if (recentDrawerOpen) {
+      recentDrawerWasOpenRef.current = true;
 
       const id = window.requestAnimationFrame(() => {
         const activeRecent =
@@ -1048,7 +1382,7 @@ function App({ dependencies }: AppProps) {
           settings.recentFiles
             .map((entry) => recentItemRefs.current.get(entry.path) ?? null)
             .find(Boolean) ??
-          sidebarRefreshButtonRef.current;
+          recentDrawerRef.current;
 
         activeRecent?.focus();
       });
@@ -1058,8 +1392,8 @@ function App({ dependencies }: AppProps) {
       };
     }
 
-    if (mobileSidebarWasOpenRef.current) {
-      mobileSidebarWasOpenRef.current = false;
+    if (recentDrawerWasOpenRef.current) {
+      recentDrawerWasOpenRef.current = false;
       const shouldRestoreFocus = shouldRestoreSidebarFocusRef.current;
       shouldRestoreSidebarFocusRef.current = false;
       if (!shouldRestoreFocus) {
@@ -1092,55 +1426,119 @@ function App({ dependencies }: AppProps) {
         }
       };
     }
-  }, [mobileSidebarOpen, mobileViewport, session.path, settings.recentFiles]);
+  }, [recentDrawerOpen, session.path, settings.recentFiles]);
 
   const banner = (() => {
     if (session.conflictKind === "missing") {
       return {
         tone: "warning",
-        text: "File missing on disk. Keep editing here, then use Save As to keep your changes.",
+        text: messages.banners.missing,
       };
     }
 
     if (session.conflictKind === "stale-write") {
       return {
         tone: "warning",
-        text: "Disk version changed before save finished. Reload from disk or use Save As.",
+        text: messages.banners.staleWrite,
       };
     }
 
     if (session.conflictKind === "save-failed" && session.lastError) {
       return {
         tone: "danger",
-        text: `Save failed: ${session.lastError}`,
+        text: messages.banners.saveFailed(session.lastError),
       };
     }
 
     if (session.conflictKind === "externally-modified") {
       return {
         tone: "warning",
-        text: "Disk version changed while you still have unsaved edits.",
+        text: messages.banners.externallyModified,
       };
     }
 
     return null;
   })();
 
-  const statusLabel = busyLabel ?? (session.dirty ? "Unsaved" : "Saved");
-  const editorModeLabel = session.mode === "rich" ? "Rich" : "Raw";
-  const documentLocationLabel = session.path ?? "Scratch note";
-  const liveStatus = [
-    session.displayName,
-    statusLabel,
-    session.mode === "rich" ? "Rich editor" : "Raw editor",
-  ].join(". ");
+  const saveStateLabel = session.dirty
+    ? messages.workspace.unsaved
+    : messages.workspace.saved;
+  const documentLocationLabel = session.path ?? messages.workspace.scratchNote;
+  const trimmedMarkdown = session.canonicalMarkdown.trim();
+  const wordCount = trimmedMarkdown
+    ? (trimmedMarkdown.match(/\b[\p{L}\p{N}][\p{L}\p{N}'’-]*\b/gu) ?? []).length
+    : 0;
+  const characterCount = session.canonicalMarkdown.length;
+  const documentStatsLabel = messages.workspace.documentStats({
+    characters: characterCount,
+    words: wordCount,
+  });
+  const liveStatus = messages.workspace.liveStatus({
+    document: session.path ? session.displayName : messages.workspace.scratchNote,
+    state: busyLabel ?? saveStateLabel,
+    editor:
+      session.mode === "rich"
+        ? messages.workspace.richEditorStatus
+        : messages.workspace.rawEditorStatus,
+  });
 
-  const drawerRecentCountLabel = `${settings.recentFiles.length} recent ${
-    settings.recentFiles.length === 1 ? "file" : "files"
-  }`;
-  const sidebarToggleLabel =
-    sidebarVisible && !mobileViewport ? "Collapse sidebar" : "Open recent files";
-  const showSidebarTitlebarPane = sidebarVisible && !mobileViewport;
+  const drawerRecentCountLabel = messages.workspace.recentCount(
+    settings.recentFiles.length,
+  );
+  const sidebarToggleLabel = recentDrawerOpen
+    ? messages.workspace.closeRecentFiles
+    : messages.workspace.openRecentFiles;
+  const recentListContent =
+    settings.recentFiles.length === 0 ? (
+      <p className="empty-recent">{messages.workspace.recentEmpty}</p>
+    ) : (
+      settings.recentFiles.map((entry) => (
+        <button
+          className={`recent-item ${session.path === entry.path ? "is-active" : ""}`}
+          key={entry.path}
+          onClick={() => void requestOpenRecentPath(entry.path)}
+          ref={(element) => {
+            recentItemRefs.current.set(entry.path, element);
+          }}
+          type="button"
+        >
+          <span className="recent-name">{entry.displayName}</span>
+          <span className="recent-meta">
+            {formatLastOpened(entry.lastOpenedMs, locale)}
+          </span>
+        </button>
+      ))
+    );
+
+  const renderRecentDrawer = () => (
+    <aside
+      aria-label={messages.workspace.recentFilesAriaLabel}
+      aria-modal="true"
+      className="app-sidebar"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeRecentDrawer();
+        }
+      }}
+      ref={recentDrawerRef}
+      role="dialog"
+      tabIndex={-1}
+    >
+      <div className="sidebar-header">
+        <div className="sidebar-heading">
+          <div className="sidebar-title">{messages.workspace.recentTitle}</div>
+          <div className="sidebar-caption">{drawerRecentCountLabel}</div>
+        </div>
+      </div>
+
+      <div className="recent-list">{recentListContent}</div>
+    </aside>
+  );
+
+  if (!initialized) {
+    return null;
+  }
 
   return (
     <>
@@ -1148,272 +1546,121 @@ function App({ dependencies }: AppProps) {
         {liveStatus}
       </div>
 
-      <div
-        className={`app-shell ${sidebarVisible ? "has-visible-sidebar" : "is-sidebar-collapsed"} ${
-          mobileViewport ? "is-mobile-viewport" : ""
-        } ${isMacWindow ? "is-macos" : ""}`}
-        style={
-          isMacWindow
-            ? ({
-                "--mac-window-controls-width": `${MAC_WINDOW_CONTROLS_RESERVED_WIDTH}px`,
-              } as CSSProperties)
-            : undefined
-        }
-      >
-        {mobileViewport && mobileSidebarOpen ? (
+      <div className="app-shell">
+        {recentDrawerOpen ? (
           <button
-            aria-label="Close recent files"
+            aria-hidden="true"
             className="sidebar-scrim"
             onClick={() => {
-              closeMobileSidebar();
+              closeRecentDrawer();
             }}
+            tabIndex={-1}
             type="button"
           />
         ) : null}
 
-        <header className="app-titlebar">
-          {showSidebarTitlebarPane ? (
-            <div className="app-titlebar-sidebar-pane">
-              <div className="app-titlebar-sidebar-controls">
-                <div
-                  aria-hidden="true"
-                  className="app-titlebar-window-gap"
-                  data-tauri-drag-region={isMacWindow ? true : undefined}
-                />
-                <button
-                  aria-expanded={sidebarVisible}
-                  aria-haspopup={mobileViewport ? "dialog" : undefined}
-                  aria-label={sidebarToggleLabel}
-                  className="titlebar-icon-button"
-                  onClick={(event) => {
-                    if (sidebarVisible && !mobileViewport) {
-                      collapseSidebar();
-                      return;
-                    }
+        {recentDrawerOpen ? renderRecentDrawer() : null}
 
-                    openSidebar(event.currentTarget);
+        <main className="workspace">
+          <div className="workspace-body">
+            <div className="workspace-header">
+              <div className="workspace-heading">
+                <button
+                  aria-expanded={recentDrawerOpen}
+                  aria-haspopup="dialog"
+                  aria-label={sidebarToggleLabel}
+                  className="titlebar-icon-button sidebar-toggle-button"
+                  onClick={(event) => {
+                    handleRecentDrawerToggle(event.currentTarget);
                   }}
                   ref={sidebarToggleRef}
                   type="button"
                 >
-                  <SidebarToggleIcon collapsed={!sidebarVisible} />
+                  <SidebarToggleIcon collapsed={!recentDrawerOpen} />
                 </button>
-              </div>
-              <div className="app-titlebar-sidebar-drag" data-tauri-drag-region />
-            </div>
-          ) : null}
-
-          <div className="app-titlebar-workspace-pane">
-            <div className="app-titlebar-workspace-main">
-              {!showSidebarTitlebarPane ? (
-                <div className="app-titlebar-leading-controls">
-                  <div
-                    aria-hidden="true"
-                    className="app-titlebar-window-gap"
-                    data-tauri-drag-region={isMacWindow ? true : undefined}
-                  />
-                  <button
-                    aria-expanded={sidebarVisible}
-                    aria-haspopup={mobileViewport ? "dialog" : undefined}
-                    aria-label={sidebarToggleLabel}
-                    className="titlebar-icon-button"
-                    onClick={(event) => {
-                      if (sidebarVisible && !mobileViewport) {
-                        collapseSidebar();
-                        return;
-                      }
-
-                      openSidebar(event.currentTarget);
-                    }}
-                    ref={sidebarToggleRef}
-                    type="button"
-                  >
-                    <SidebarToggleIcon collapsed={!sidebarVisible} />
-                  </button>
-                </div>
-              ) : null}
-              <div className="document-heading" data-tauri-drag-region>
-                <h1 className="document-title">{session.displayName}</h1>
-              </div>
-              <div className="app-titlebar-workspace-drag" data-tauri-drag-region />
-            </div>
-
-            <div className="app-titlebar-actions" role="toolbar" aria-label="Editor actions">
-              <div className="document-header-actions">
-                <button
-                  className="toolbar-button"
-                  onClick={() => {
-                    void requestNewDraft();
-                  }}
-                  type="button"
-                >
-                  New
-                </button>
-                <button
-                  className="toolbar-button"
-                  onClick={() => void openFileDialog()}
-                  type="button"
-                >
-                  Open
-                </button>
-                <button
-                  className="toolbar-button"
-                  onClick={() => void saveCurrent()}
-                  type="button"
-                >
-                  Save
-                </button>
-                <button
-                  className="toolbar-button"
-                  onClick={() => void saveAsDialog()}
-                  type="button"
-                >
-                  Save As
-                </button>
-                <ModeToggle mode={session.mode} onChange={handleModeChange} />
-                <span className={`status-indicator ${session.dirty ? "is-dirty" : ""}`}>
-                  {statusLabel}
-                </span>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        <div className="app-content">
-          {sidebarVisible ? (
-            <aside
-              aria-label="Recent files"
-              aria-modal={mobileViewport ? true : undefined}
-              className={`app-sidebar ${mobileViewport ? "is-overlay" : ""}`}
-              onKeyDown={(event) => {
-                if (mobileViewport && event.key === "Escape") {
-                  event.preventDefault();
-                  closeMobileSidebar();
-                }
-              }}
-              role={mobileViewport ? "dialog" : "complementary"}
-            >
-              <div className="sidebar-header">
-                <div className="sidebar-heading">
-                  <div className="sidebar-title">Recent</div>
-                  <div className="sidebar-caption">{drawerRecentCountLabel}</div>
-                </div>
-
-                {mobileViewport ? (
-                  <button
-                    aria-label="Close recent files"
-                    className="toolbar-button subtle-button"
-                    onClick={() => {
-                      closeMobileSidebar();
-                    }}
-                    type="button"
-                  >
-                    Close
-                  </button>
-                ) : null}
-              </div>
-
-              <div className="sidebar-toolbar">
-                <button
-                  className="toolbar-button subtle-button"
-                  onClick={() => void refreshSettings()}
-                  ref={sidebarRefreshButtonRef}
-                  type="button"
-                >
-                  Refresh
-                </button>
-              </div>
-
-              <div className="recent-list">
-                {settings.recentFiles.length === 0 ? (
-                  <p className="empty-recent">Recent files will appear here.</p>
-                ) : (
-                  settings.recentFiles.map((entry) => (
-                    <button
-                      className={`recent-item ${session.path === entry.path ? "is-active" : ""}`}
-                      key={entry.path}
-                      onClick={() => {
-                        if (mobileViewport) {
-                          closeMobileSidebar();
-                        }
-                        void requestOpenPath(entry.path);
-                      }}
-                      ref={(element) => {
-                        recentItemRefs.current.set(entry.path, element);
-                      }}
-                      type="button"
-                    >
-                      <span className="recent-name">{entry.displayName}</span>
-                      <span className="recent-meta">
-                        {formatLastOpened(entry.lastOpenedMs)}
-                      </span>
-                    </button>
-                  ))
-                )}
-              </div>
-            </aside>
-          ) : null}
-
-          <main className="workspace">
-            <div className="workspace-body">
-              {banner ? (
-                <div className={`banner tone-${banner.tone}`} role="alert">
-                  {banner.text}
-                </div>
-              ) : null}
-
-              <section className="editor-shell" ref={editorViewportRef}>
-                {session.mode === "rich" ? (
-                  <RichEditorAdapter
-                    autoFocus={focusTarget === "rich"}
-                    content={session.richDoc}
-                    contentVersion={session.richVersion}
-                    onDocumentChange={handleRichChange}
-                    onRequestLink={promptForLink}
-                    ref={richEditorRef}
-                  />
-                ) : (
-                  <RawEditorSurface
-                    autoFocus={focusTarget === "raw"}
-                    onChange={handleRawChange}
-                    ref={rawEditorRef}
-                    value={session.canonicalMarkdown}
-                  />
-                )}
-              </section>
-
-              <footer className="workspace-statusbar">
-                <span className="workspace-status-path" title={documentLocationLabel}>
+                <p className="workspace-path" title={documentLocationLabel}>
                   {documentLocationLabel}
-                </span>
-                <div className="workspace-status-meta">
-                  <span className="status-chip">{session.newlineStyle.toUpperCase()}</span>
-                  <span className="status-chip">{editorModeLabel}</span>
-                </div>
-              </footer>
+                </p>
+              </div>
+              <div
+                className="workspace-meta"
+                aria-label={messages.workspace.metadataAriaLabel}
+              >
+                <span className="workspace-meta-item">{documentStatsLabel}</span>
+                <span className="workspace-meta-divider" aria-hidden="true" />
+                <ModeToggle
+                  groupAriaLabel={messages.editor.modeToggleAriaLabel}
+                  labels={{
+                    raw: messages.editor.rawMode,
+                    rich: messages.editor.richMode,
+                  }}
+                  mode={session.mode}
+                  onChange={handleModeChange}
+                />
+                <span className="workspace-meta-divider" aria-hidden="true" />
+                <span className="workspace-meta-item">{saveStateLabel}</span>
+              </div>
             </div>
-          </main>
-        </div>
+
+            {banner ? (
+              <div className={`banner tone-${banner.tone}`} role="alert">
+                {banner.text}
+              </div>
+            ) : null}
+
+            <section className="editor-shell" ref={editorViewportRef}>
+              {session.mode === "rich" ? (
+                <RichEditorAdapter
+                  autoFocus={focusTarget === "rich"}
+                  content={session.richDoc}
+                  contentVersion={session.richVersion}
+                  locale={locale}
+                  messages={richEditorMessages}
+                  onDocumentChange={handleRichChange}
+                  onRequestImage={requestImageFromPrompt}
+                  onResolveImageFile={prepareImageAssetFromFile}
+                  onRequestLink={promptForLink}
+                  ref={richEditorRef}
+                />
+              ) : (
+                <RawEditorSurface
+                  ariaLabel={messages.editor.rawEditorAriaLabel}
+                  autoFocus={focusTarget === "raw"}
+                  onChange={handleRawChange}
+                  onDropImageFile={handleRawImageFileInsert}
+                  onPasteImageFile={handleRawImageFileInsert}
+                  placeholder={messages.editor.rawEditorPlaceholder}
+                  ref={rawEditorRef}
+                  value={session.canonicalMarkdown}
+                />
+              )}
+            </section>
+          </div>
+        </main>
       </div>
 
       <PromptDialog
         actions={
           promptState.kind === "external-modified"
             ? [
-                { id: "reload", label: "Reload from Disk", tone: "primary" },
-                { id: "keep", label: "Keep Mine" },
-                { id: "save-as", label: "Save As" },
+                {
+                  id: "reload",
+                  label: messages.prompts.reloadFromDisk,
+                  tone: "primary",
+                },
+                { id: "keep", label: messages.prompts.keepMine },
+                { id: "save-as", label: messages.prompts.saveAs },
               ]
             : [
-                { id: "save", label: "Save", tone: "primary" },
-                { id: "discard", label: "Don't Save" },
-                { id: "cancel", label: "Cancel" },
+                { id: "save", label: messages.prompts.save, tone: "primary" },
+                { id: "discard", label: messages.prompts.dontSave },
+                { id: "cancel", label: messages.prompts.cancel },
               ]
         }
         body={
           promptState.kind === "external-modified"
-            ? "The document changed on disk while you still have unsaved edits in downmark."
-            : "You have unsaved changes. Save them before continuing?"
+            ? messages.prompts.externalModifiedBody
+            : messages.prompts.unsavedBody
         }
         onAction={(actionId) => {
           void handlePromptAction(actionId);
@@ -1422,8 +1669,8 @@ function App({ dependencies }: AppProps) {
         open={promptState.kind !== "none"}
         title={
           promptState.kind === "external-modified"
-            ? "File changed on disk"
-            : "Unsaved changes"
+            ? messages.prompts.externalModifiedTitle
+            : messages.prompts.unsavedTitle
         }
       />
     </>

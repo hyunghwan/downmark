@@ -9,6 +9,8 @@ const samples = [
   "> quoted line\n\n---\n\n`inline`",
   "```ts\nconsole.log('downmark')\n```",
   "[OpenAI](https://openai.com)\n\n## Nested\n\n- item with **bold**",
+  "![diagram](diagram.png)",
+  "| Name | Value |\n| --- | ---: |\n| Alpha | 1 |\n| Beta | 2 |",
 ];
 
 describe("markdown gateway", () => {

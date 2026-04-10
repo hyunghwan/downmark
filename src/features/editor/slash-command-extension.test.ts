@@ -72,4 +72,31 @@ describe("slash command helper", () => {
     expect(markdown).toContain("- [ ] Ship it");
     expect(markdown).not.toContain("/todo");
   });
+
+  it("inserts a markdown table from the slash command", () => {
+    const editor = new Editor({
+      extensions: createMarkdownExtensions(),
+      content: "<p>/table</p>",
+      editable: true,
+      element: document.createElement("div"),
+    });
+    const gateway = new MarkdownGateway();
+
+    editors.push(editor);
+    gateways.push(gateway);
+
+    editor.commands.setTextSelection({ from: 7, to: 7 });
+
+    expect(
+      applySlashCommand(editor, "table", {
+        from: 1,
+        to: 7,
+      }),
+    ).toBe(true);
+
+    const markdown = gateway.fromRich(editor.getJSON());
+    expect(markdown).toContain("|");
+    expect(markdown).toContain("---");
+    expect(markdown).not.toContain("/table");
+  });
 });

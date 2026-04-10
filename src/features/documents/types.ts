@@ -1,5 +1,10 @@
 import type { JSONContent } from "@tiptap/core";
 
+import type {
+  LanguagePreference,
+  SupportedLocale,
+} from "../i18n/locale";
+
 export type EditorMode = "rich" | "raw";
 export type NewlineStyle = "lf" | "crlf";
 export type ConflictKind =
@@ -38,6 +43,23 @@ export interface FileStatusResponse {
   fingerprint: FileFingerprint | null;
 }
 
+export interface PreparedImageAsset {
+  relativePath: string;
+  absolutePath: string;
+  alt: string;
+}
+
+export type PrepareImageAssetInput =
+  | {
+      documentPath: string;
+      sourcePath: string;
+    }
+  | {
+      documentPath: string;
+      bytes: Uint8Array;
+      mimeType: string;
+    };
+
 export interface RecentFile {
   path: string;
   displayName: string;
@@ -46,6 +68,8 @@ export interface RecentFile {
 
 export interface AppSettings {
   recentFiles: RecentFile[];
+  languagePreference: LanguagePreference;
+  locale: SupportedLocale;
 }
 
 export interface FileSession {

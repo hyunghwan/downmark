@@ -1,11 +1,21 @@
+import { Image } from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
+import { Table } from "@tiptap/extension-table";
+import { TableCell } from "@tiptap/extension-table-cell";
+import { TableHeader } from "@tiptap/extension-table-header";
+import { TableRow } from "@tiptap/extension-table-row";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
 import { Markdown } from "@tiptap/markdown";
 import StarterKit from "@tiptap/starter-kit";
 
-import { createSlashCommandExtension } from "./slash-command-extension";
+import { getLocaleMessages } from "../i18n/messages";
+import type { SupportedLocale } from "../i18n/locale";
+import {
+  createSlashCommandExtensionWithHandler,
+  type SlashCommandHandler,
+} from "./slash-command-extension";
 
 export function createMarkdownExtensions() {
   return [
@@ -21,6 +31,14 @@ export function createMarkdownExtensions() {
       openOnClick: false,
       protocols: ["http", "https", "mailto"],
     }),
+    Image,
+    Table.configure({
+      renderWrapper: true,
+      resizable: false,
+    }),
+    TableRow,
+    TableHeader,
+    TableCell,
     Markdown.configure({
       markedOptions: {
         gfm: true,
@@ -29,12 +47,17 @@ export function createMarkdownExtensions() {
   ];
 }
 
-export function createRichEditorExtensions() {
+export function createRichEditorExtensions(
+  locale: SupportedLocale,
+  onSlashCommand?: SlashCommandHandler,
+) {
+  const messages = getLocaleMessages(locale);
+
   return [
     ...createMarkdownExtensions(),
     Placeholder.configure({
-      placeholder: "Start typing a note, or use / for commands.",
+      placeholder: messages.editor.richEditorPlaceholder,
     }),
-    createSlashCommandExtension(),
+    createSlashCommandExtensionWithHandler(locale, onSlashCommand),
   ];
 }

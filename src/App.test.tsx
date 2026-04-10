@@ -9,8 +9,15 @@ import type {
   FileSession,
   FileStatusResponse,
   LoadedFile,
+  PrepareImageAssetInput,
+  PreparedImageAsset,
   SaveFileResult,
 } from "./features/documents/types";
+import {
+  getSystemLocale,
+  resolveLocaleFromPreference,
+  type LanguagePreference,
+} from "./features/i18n/locale";
 
 type GatewayPort = AppDependencies["gateway"];
 type ShellPort = AppDependencies["shell"];
@@ -71,6 +78,7 @@ class FakeGateway implements GatewayPort {
   private readonly files = new Map<string, LoadedFile>();
   private fingerprintCounter = 0;
 
+  preparedAssets: PreparedImageAsset[] = [];
   removedPaths: string[] = [];
   savedRequests: Array<{ path: string; markdown: string }> = [];
   settings: AppSettings;
@@ -84,6 +92,8 @@ class FakeGateway implements GatewayPort {
     this.settings =
       settings ??
       ({
+        languagePreference: "system",
+        locale: resolveLocaleFromPreference("system", getSystemLocale()),
         recentFiles: files.map((file, index) => ({
           path: file.path,
           displayName:
@@ -163,6 +173,80 @@ class FakeGateway implements GatewayPort {
     return this.files.has(path);
   }
 
+  async prepareImageAsset(input: PrepareImageAssetInput) {
+    const documentPath = input.documentPath;
+    const documentDirectory = documentPath.replace(/[/\\][^/\\]+$/, "");
+    const documentName = documentPath.split(/[\\/]/).pop() ?? documentPath;
+    const documentStem = documentName.replace(/\.[^.]+$/, "");
+    const nextIndex =
+      this.preparedAssets.filter((asset) =>
+        asset.absolutePath.includes(`${documentStem}-image-`),
+      ).length + 1;
+    const extension =
+      "sourcePath" in input
+        ? (input.sourcePath.split(".").pop() ?? "png")
+        : input.mimeType.split("/").pop()?.replace("jpeg", "jpg") ?? "png";
+    const fileName = `${documentStem}-image-${nextIndex}.${extension}`;
+    const prepared = {
+      relativePath: fileName.replace(/ /g, "%20"),
+      absolutePath: `${documentDirectory}/${fileName}`,
+      alt:
+        "sourcePath" in input
+          ? (input.sourcePath.split(/[\\/]/).pop() ?? fileName).replace(/\.[^.]+$/, "")
+          : fileName.replace(/\.[^.]+$/, ""),
+    } satisfies PreparedImageAsset;
+
+    this.preparedAssets.push(prepared);
+    return prepared;
+  }
+
+  async relocateLocalImageLinks(
+    markdown: string,
+    fromDocumentPath: string | null,
+    toDocumentPath: string,
+  ) {
+    if (!fromDocumentPath || fromDocumentPath === toDocumentPath) {
+      return markdown;
+    }
+
+    const fromStem = fromDocumentPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "";
+
+    return markdown.replace(
+      /!\[[^\]]*]\(([^)\s]+)(?:\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'))?\)/g,
+      (full, destination: string) => {
+        const normalized = destination.startsWith("./")
+          ? destination.slice(2)
+          : destination;
+        const decoded = normalized.replace(/%20/g, " ");
+        if (
+          decoded.includes("/") ||
+          decoded.includes("\\") ||
+          !decoded.startsWith(`${fromStem}-image-`)
+        ) {
+          return full;
+        }
+
+        const nextDocumentStem =
+          toDocumentPath.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, "") ?? "document";
+        const nextIndex =
+          this.preparedAssets.filter((asset) =>
+            asset.absolutePath.includes(`${nextDocumentStem}-image-`),
+          ).length + 1;
+        const extension = decoded.split(".").pop() ?? "png";
+        const nextRelativePath = `${nextDocumentStem}-image-${nextIndex}.${extension}`;
+        const nextDirectory = toDocumentPath.replace(/[/\\][^/\\]+$/, "");
+
+        this.preparedAssets.push({
+          relativePath: nextRelativePath,
+          absolutePath: `${nextDirectory}/${nextRelativePath}`,
+          alt: decoded.replace(/\.[^.]+$/, ""),
+        });
+
+        return full.replace(destination, nextRelativePath);
+      },
+    );
+  }
+
   async loadSettings() {
     return structuredClone(this.settings);
   }
@@ -172,6 +256,7 @@ class FakeGateway implements GatewayPort {
     const file = this.files.get(path);
 
     this.settings = {
+      ...this.settings,
       recentFiles: [
         {
           path,
@@ -190,7 +275,18 @@ class FakeGateway implements GatewayPort {
   async removeRecentFile(path: string) {
     this.removedPaths.push(path);
     this.settings = {
+      ...this.settings,
       recentFiles: this.settings.recentFiles.filter((entry) => entry.path !== path),
+    };
+
+    return structuredClone(this.settings);
+  }
+
+  async setLanguagePreference(languagePreference: LanguagePreference) {
+    this.settings = {
+      ...this.settings,
+      languagePreference,
+      locale: resolveLocaleFromPreference(languagePreference, getSystemLocale()),
     };
 
     return structuredClone(this.settings);
@@ -223,14 +319,18 @@ class FakeGateway implements GatewayPort {
 function createDialogs(overrides?: Partial<Record<"openFile" | "saveFile", string | null>>) {
   const messages: Array<{ body: string; kind: "error" | "info" | "warning"; title: string }> = [];
   const openFileMock = vi.fn(async () => overrides?.openFile ?? null);
-  const saveFileMock = vi.fn(async () => overrides?.saveFile ?? null);
+  const saveFileMock = vi.fn(async (_defaultPath?: string) => overrides?.saveFile ?? null);
 
   return {
     messages,
     openFileMock,
     saveFileMock,
-    openFile: openFileMock,
-    saveFile: saveFileMock,
+    async openFile(_filters) {
+      return openFileMock();
+    },
+    async saveFile(defaultPath, _filters) {
+      return saveFileMock(defaultPath);
+    },
     async showMessage(body, options) {
       messages.push({ body, ...options });
     },
@@ -246,6 +346,7 @@ function renderApp(options?: {
   files?: Array<{ markdown: string; path: string }>;
   initialPaths?: string[];
   pollIntervalMs?: number;
+  promptForLink?: (prompt: string) => Promise<string | null>;
   settings?: AppSettings;
 }) {
   const files =
@@ -269,7 +370,7 @@ function renderApp(options?: {
     shell,
     dialogs,
     fileStatusPollMs: options?.pollIntervalMs,
-    promptForLink: async () => null,
+    promptForLink: options?.promptForLink ?? (async (_prompt) => null),
   };
 
   render(<App dependencies={dependencies} />);
@@ -287,21 +388,153 @@ function setViewportWidth(width: number) {
   window.dispatchEvent(new Event("resize"));
 }
 
+function setNavigatorLanguage(language: string) {
+  Object.defineProperty(window.navigator, "language", {
+    configurable: true,
+    value: language,
+  });
+}
+
+function createImageFile(
+  name: string,
+  options?: { path?: string; type?: string },
+) {
+  const bytes = new TextEncoder().encode("image-bytes");
+  const file = new File(["image-bytes"], name, {
+    type: options?.type ?? "image/png",
+  });
+
+  Object.defineProperty(file, "arrayBuffer", {
+    configurable: true,
+    value: async () =>
+      bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+  });
+
+  if (options?.path) {
+    Object.defineProperty(file, "path", {
+      configurable: true,
+      value: options.path,
+    });
+  }
+
+  return file;
+}
+
 async function waitForOpenFile(name: string) {
   await waitFor(() => {
-    expect(screen.getByRole("heading", { level: 1, name })).toBeInTheDocument();
+    expect(screen.getByText(`/notes/${name}`)).toBeInTheDocument();
   });
 }
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  setNavigatorLanguage("en-US");
   setViewportWidth(1024);
 });
 
 describe("downmark app", () => {
+  it("renders a single-column workspace and keeps metadata in the toolbar row", async () => {
+    renderApp({
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    expect(document.querySelector(".app-titlebar")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Recent files" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save As" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /switch to (light|dark) mode/i }),
+    ).not.toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: "Open recent files" })).toBeInTheDocument();
+    const metadata = screen.getByLabelText("Document metadata");
+    expect(metadata).toHaveTextContent("2 words · 15 chars");
+    expect(metadata).toHaveTextContent("Saved");
+    expect(within(metadata).getByRole("radio", { name: "Rich" })).toBeChecked();
+  });
+
+  it("uses the stored language override on first render", async () => {
+    renderApp({
+      initialPaths: ["/notes/current.md"],
+      settings: {
+        languagePreference: "ko",
+        locale: "ko",
+        recentFiles: [],
+      },
+    });
+
+    await waitForOpenFile("current.md");
+
+    expect(screen.getByRole("button", { name: "최근 파일 열기" })).toBeInTheDocument();
+    expect(screen.getByLabelText("문서 메타데이터")).toHaveTextContent("저장됨");
+    expect(screen.getByRole("radio", { name: "리치" })).toBeChecked();
+    expect(
+      screen.getByRole("textbox", { name: "리치 텍스트 편집기" }),
+    ).toBeInTheDocument();
+  });
+
+  it("switches languages from the menu and restores system locale while preserving raw selection", async () => {
+    setNavigatorLanguage("es-MX");
+    const dependencies = renderApp({
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Abrir archivos recientes" }),
+      ).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("radio", { name: "Plano" }));
+    const textarea = (await screen.findByRole("textbox", {
+      name: "Editor de markdown plano",
+    })) as HTMLTextAreaElement;
+    textarea.focus();
+    textarea.setSelectionRange(4, 9);
+
+    act(() => {
+      dependencies.shell.emitMenuAction("set-language-ko");
+    });
+
+    const koreanTextarea = (await screen.findByRole("textbox", {
+      name: "원문 마크다운 편집기",
+    })) as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "최근 파일 열기" })).toBeInTheDocument();
+    });
+    expect(screen.getByRole("radio", { name: "원문" })).toBeChecked();
+    expect(koreanTextarea).toHaveValue("# Current\n\nBody");
+    expect(koreanTextarea.selectionStart).toBe(4);
+    expect(koreanTextarea.selectionEnd).toBe(9);
+
+    act(() => {
+      dependencies.shell.emitMenuAction("set-language-system");
+    });
+
+    const spanishTextarea = (await screen.findByRole("textbox", {
+      name: "Editor de markdown plano",
+    })) as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Abrir archivos recientes" }),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByRole("radio", { name: "Plano" })).toBeChecked();
+    expect(spanishTextarea.selectionStart).toBe(4);
+    expect(spanishTextarea.selectionEnd).toBe(9);
+  });
+
   it("renders raw markdown into the rich editor when switching modes", async () => {
     const user = userEvent.setup();
     renderApp();
+    await waitFor(() => {
+      expect(screen.getByRole("radio", { name: "Raw" })).toBeInTheDocument();
+    });
 
     fireEvent.click(screen.getByRole("radio", { name: "Raw" }));
 
@@ -368,10 +601,13 @@ describe("downmark app", () => {
 
   it("prompts before opening a new file when there are unsaved changes", async () => {
     const user = userEvent.setup();
-    renderApp({
+    const dependencies = renderApp({
       dialogOverrides: {
         openFile: "/notes/next.md",
       },
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("radio", { name: "Raw" })).toBeInTheDocument();
     });
 
     fireEvent.click(screen.getByRole("radio", { name: "Raw" }));
@@ -383,7 +619,10 @@ describe("downmark app", () => {
       },
     });
 
-    await user.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.keyDown(window, { key: "o", ctrlKey: true });
+    await waitFor(() => {
+      expect(dependencies.dialogs.openFileMock).toHaveBeenCalledTimes(1);
+    });
 
     expect(await screen.findByRole("alertdialog", { name: "Unsaved changes" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Don't Save" }));
@@ -395,13 +634,10 @@ describe("downmark app", () => {
   it("announces external modification while dirty and offers recovery actions", async () => {
     const user = userEvent.setup();
     const dependencies = renderApp({
-      dialogOverrides: {
-        openFile: "/notes/current.md",
-      },
+      initialPaths: ["/notes/current.md"],
       pollIntervalMs: 10_000,
     });
 
-    await user.click(screen.getByRole("button", { name: "Open" }));
     await waitForOpenFile("current.md");
     fireEvent.click(screen.getByRole("radio", { name: "Raw" }));
     await screen.findByRole("textbox", { name: "Raw markdown editor" });
@@ -428,7 +664,7 @@ describe("downmark app", () => {
     expect(screen.queryByRole("alertdialog", { name: "File changed on disk" })).not.toBeInTheDocument();
   });
 
-  it("shows the recent sidebar by default on desktop and supports collapse/reopen", async () => {
+  it("keeps recent hidden by default and opens it as an overlay drawer", async () => {
     const user = userEvent.setup();
     renderApp({
       initialPaths: ["/notes/current.md"],
@@ -436,28 +672,181 @@ describe("downmark app", () => {
 
     await waitForOpenFile("current.md");
 
-    expect(
-      screen.getByRole("complementary", { name: "Recent files" }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /current\.md/i })).toHaveClass("is-active");
+    const sidebarToggle = screen.getByRole("button", { name: "Open recent files" });
+    expect(screen.queryByRole("dialog", { name: "Recent files" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Collapse sidebar" }));
-    expect(
-      screen.queryByRole("complementary", { name: "Recent files" }),
-    ).not.toBeInTheDocument();
+    await user.click(sidebarToggle);
 
-    await user.click(screen.getByRole("button", { name: "Open recent files" }));
-    expect(
-      await screen.findByRole("complementary", { name: "Recent files" }),
-    ).toBeInTheDocument();
+    const sidebar = await screen.findByRole("dialog", { name: "Recent files" });
+    expect(sidebar).toBeInTheDocument();
+    expect(within(sidebar).getByRole("button", { name: /current\.md/i })).toHaveClass("is-active");
+
+    const scrim = document.querySelector(".sidebar-scrim");
+    expect(scrim).not.toBeNull();
+    await user.click(scrim as HTMLElement);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Recent files" })).not.toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(sidebarToggle).toHaveFocus();
+    });
   });
 
-  it("removes missing recent files and closes the mobile overlay with Escape", async () => {
+  it("resets the editor viewport to the top when opening another document", async () => {
+    const user = userEvent.setup();
+    renderApp({
+      files: [
+        {
+          path: "/notes/current.md",
+          markdown: `# Current\n\n${"Current line\n".repeat(120)}`,
+        },
+        {
+          path: "/notes/next.md",
+          markdown: `# Next\n\n${"Next line\n".repeat(120)}`,
+        },
+      ],
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    const viewport = document.querySelector(".editor-shell") as HTMLElement | null;
+    expect(viewport).not.toBeNull();
+
+    Object.defineProperty(viewport, "scrollHeight", {
+      configurable: true,
+      value: 1600,
+    });
+    Object.defineProperty(viewport, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
+
+    viewport!.scrollTop = 280;
+
+    await user.click(screen.getByRole("button", { name: "Open recent files" }));
+
+    const drawer = await screen.findByRole("dialog", { name: "Recent files" });
+    await user.click(within(drawer).getByRole("button", { name: /next\.md/i }));
+
+    const unsavedPrompt = screen.queryByRole("alertdialog", {
+      name: "Unsaved changes",
+    });
+    if (unsavedPrompt) {
+      await user.click(within(unsavedPrompt).getByRole("button", { name: "Don't Save" }));
+    }
+
+    await waitForOpenFile("next.md");
+    await waitFor(() => {
+      expect(viewport!.scrollTop).toBe(0);
+    });
+  });
+
+  it("keeps raw mode, auto-grows the textarea, and resets to the top when opening another document", async () => {
+    const user = userEvent.setup();
+    renderApp({
+      files: [
+        {
+          path: "/notes/current.md",
+          markdown: `# Current\n\n${"Current line\n".repeat(120)}`,
+        },
+        {
+          path: "/notes/next.md",
+          markdown: `# Next\n\n${"Next line\n".repeat(120)}`,
+        },
+      ],
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+    fireEvent.click(screen.getByRole("radio", { name: "Raw" }));
+
+    const viewport = document.querySelector(".editor-shell") as HTMLElement | null;
+    expect(viewport).not.toBeNull();
+
+    Object.defineProperty(viewport, "scrollHeight", {
+      configurable: true,
+      value: 1600,
+    });
+    Object.defineProperty(viewport, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
+
+    const restoreScrollHeight = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "scrollHeight",
+    );
+
+    Object.defineProperty(HTMLTextAreaElement.prototype, "scrollHeight", {
+      configurable: true,
+      get() {
+        return 1600;
+      },
+    });
+
+    try {
+      window.dispatchEvent(new Event("resize"));
+
+      const textarea = await screen.findByRole("textbox", {
+        name: "Raw markdown editor",
+      }) as HTMLTextAreaElement;
+
+      await waitFor(() => {
+        expect(textarea.style.height).toBe("1600px");
+      });
+
+      viewport!.scrollTop = 280;
+      textarea.focus();
+      textarea.setSelectionRange(20, 20);
+
+      await user.click(screen.getByRole("button", { name: "Open recent files" }));
+      const drawer = await screen.findByRole("dialog", { name: "Recent files" });
+      await user.click(within(drawer).getByRole("button", { name: /next\.md/i }));
+
+      const unsavedPrompt = screen.queryByRole("alertdialog", {
+        name: "Unsaved changes",
+      });
+      if (unsavedPrompt) {
+        await user.click(within(unsavedPrompt).getByRole("button", { name: "Don't Save" }));
+      }
+
+      await waitForOpenFile("next.md");
+      expect(screen.getByRole("radio", { name: "Raw" })).toBeChecked();
+
+      const nextTextarea = await screen.findByRole("textbox", {
+        name: "Raw markdown editor",
+      }) as HTMLTextAreaElement;
+
+      await waitFor(() => {
+        expect(viewport!.scrollTop).toBe(0);
+      });
+      await waitFor(() => {
+        expect(nextTextarea.selectionStart).toBe(0);
+      });
+      expect(nextTextarea.selectionEnd).toBe(0);
+    } finally {
+      if (restoreScrollHeight) {
+        Object.defineProperty(
+          HTMLTextAreaElement.prototype,
+          "scrollHeight",
+          restoreScrollHeight,
+        );
+      } else {
+        delete (HTMLTextAreaElement.prototype as { scrollHeight?: number }).scrollHeight;
+      }
+    }
+  });
+
+  it("removes missing recent files and closes the overlay with Escape", async () => {
     const user = userEvent.setup();
     setViewportWidth(700);
     const dependencies = renderApp({
       initialPaths: ["/notes/current.md"],
       settings: {
+        languagePreference: "system",
+        locale: "en",
         recentFiles: [
           {
             path: "/notes/current.md",
@@ -541,7 +930,9 @@ describe("downmark app", () => {
     act(() => {
       dependencies.shell.emitMenuAction("set-raw-mode");
     });
-    const textarea = await screen.findByRole("textbox", { name: "Raw markdown editor" });
+    const textarea = (await screen.findByRole("textbox", {
+      name: "Raw markdown editor",
+    })) as HTMLTextAreaElement;
     expect(textarea).toHaveValue("# Current\n\nBody");
   });
 
@@ -556,7 +947,7 @@ describe("downmark app", () => {
       dependencies.shell.emitMenuAction("new-draft");
     });
     await waitFor(() => {
-      expect(screen.getByRole("heading", { level: 1, name: "Untitled" })).toBeInTheDocument();
+      expect(screen.getByText("Scratch note")).toBeInTheDocument();
     });
     expect(screen.getByRole("radio", { name: "Rich" })).toBeChecked();
     const richEditor = screen.getByRole("textbox", { name: "Rich text editor" });
@@ -565,6 +956,174 @@ describe("downmark app", () => {
     });
     await waitFor(() => {
       expect(richEditor).not.toHaveTextContent(/\S/);
+    });
+  });
+
+  it("opens a fresh raw draft at the top when requested from raw mode", async () => {
+    const dependencies = renderApp({
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+    fireEvent.click(screen.getByRole("radio", { name: "Raw" }));
+
+    const viewport = document.querySelector(".editor-shell") as HTMLElement | null;
+    expect(viewport).not.toBeNull();
+
+    Object.defineProperty(viewport, "scrollHeight", {
+      configurable: true,
+      value: 1600,
+    });
+    Object.defineProperty(viewport, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
+
+    const textarea = await screen.findByRole("textbox", {
+      name: "Raw markdown editor",
+    }) as HTMLTextAreaElement;
+    viewport!.scrollTop = 220;
+    textarea.focus();
+    textarea.setSelectionRange(18, 18);
+
+    act(() => {
+      dependencies.shell.emitMenuAction("new-draft");
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Scratch note")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("radio", { name: "Raw" })).toBeChecked();
+
+    const draftTextarea = await screen.findByRole("textbox", {
+      name: "Raw markdown editor",
+    }) as HTMLTextAreaElement;
+
+    await waitFor(() => {
+      expect(viewport!.scrollTop).toBe(0);
+    });
+    await waitFor(() => {
+      expect(draftTextarea.selectionStart).toBe(0);
+    });
+    expect(draftTextarea.selectionEnd).toBe(0);
+    expect(draftTextarea).toHaveValue("");
+  });
+
+  it("renders markdown images and tables when switching from raw to rich", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Raw" }));
+    const textarea = screen.getByRole("textbox", { name: "Raw markdown editor" });
+    fireEvent.change(textarea, {
+      target: {
+        value:
+          "![diagram](diagram.png)\n\n| Name | Value |\n| --- | ---: |\n| Alpha | 1 |\n| Beta | 2 |",
+      },
+    });
+
+    await user.click(screen.getByRole("radio", { name: "Rich" }));
+
+    const editor = await screen.findByRole("textbox", { name: "Rich text editor" });
+    await waitFor(() => {
+      expect(editor.querySelector("img[src=\"diagram.png\"]")).not.toBeNull();
+    });
+    expect(within(editor).getByRole("table")).toBeInTheDocument();
+    expect(within(editor).getByText("Alpha")).toBeInTheDocument();
+    expect(within(editor).getByText("2")).toBeInTheDocument();
+  });
+
+  it("inserts a clipboard image into raw mode after saving an untitled document", async () => {
+    renderApp({
+      dialogOverrides: {
+        saveFile: "/notes/draft.md",
+      },
+    });
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Raw" }));
+    const textarea = (await screen.findByRole("textbox", {
+      name: "Raw markdown editor",
+    })) as HTMLTextAreaElement;
+    textarea.focus();
+    textarea.setSelectionRange(0, 0);
+
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        files: [createImageFile("screenshot.png")],
+      },
+    });
+
+    await waitFor(() => {
+      expect(textarea).toHaveValue("![screenshot](draft-image-1.png)");
+    });
+  });
+
+  it("drops a local image into the rich editor as a relative markdown image", async () => {
+    const dependencies = renderApp({
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    const richEditor = await screen.findByRole("textbox", { name: "Rich text editor" });
+    fireEvent.drop(richEditor, {
+      clientX: 12,
+      clientY: 12,
+      dataTransfer: {
+        files: [
+          createImageFile("photo.png", {
+            path: "/tmp/photo.png",
+          }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(dependencies.gateway.preparedAssets[0]?.relativePath).toBe("current-image-1.png");
+    });
+
+    fireEvent.click(screen.getByRole("radio", { name: "Raw" }));
+    const textarea = (await screen.findByRole("textbox", {
+      name: "Raw markdown editor",
+    })) as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(textarea.value.trimEnd()).toBe("# Current\n\nBody\n\n![photo](current-image-1.png)");
+    });
+  });
+
+  it("rewrites generated local image links when saving as a new document", async () => {
+    const dependencies = renderApp({
+      dialogOverrides: {
+        saveFile: "/notes/renamed.md",
+      },
+      files: [
+        {
+          path: "/notes/current.md",
+          markdown: "# Current\n\n![photo](current-image-1.png)",
+        },
+      ],
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+    fireEvent.keyDown(window, { key: "S", ctrlKey: true, shiftKey: true });
+
+    await waitFor(() => {
+      expect(
+        dependencies.gateway.savedRequests.some(
+          (request) =>
+            request.path === "/notes/renamed.md" &&
+            request.markdown.includes("renamed-image-1.png"),
+        ),
+      ).toBe(true);
+    });
+
+    fireEvent.click(screen.getByRole("radio", { name: "Raw" }));
+    const textarea = (await screen.findByRole("textbox", {
+      name: "Raw markdown editor",
+    })) as HTMLTextAreaElement;
+    await waitFor(() => {
+      expect(textarea.value.trimEnd()).toBe("# Current\n\n![photo](renamed-image-1.png)");
     });
   });
 });

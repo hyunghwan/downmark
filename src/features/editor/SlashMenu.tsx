@@ -7,12 +7,14 @@ export interface SlashMenuHandle {
 }
 
 interface SlashMenuProps {
+  ariaLabel: string;
+  emptyLabel: string;
   items: CommandDefinition[];
   onSelect: (item: CommandDefinition) => void;
 }
 
 export const SlashMenu = forwardRef<SlashMenuHandle, SlashMenuProps>(
-  function SlashMenu({ items, onSelect }, ref) {
+  function SlashMenu({ ariaLabel, emptyLabel, items, onSelect }, ref) {
     const [selectedIndex, setSelectedIndex] = useState(0);
 
     useEffect(() => {
@@ -53,14 +55,14 @@ export const SlashMenu = forwardRef<SlashMenuHandle, SlashMenuProps>(
 
     if (!items.length) {
       return (
-        <div aria-label="Slash commands" className="slash-menu">
-          <div className="slash-empty">No matching command</div>
+        <div aria-label={ariaLabel} className="slash-menu">
+          <div className="slash-empty">{emptyLabel}</div>
         </div>
       );
     }
 
     return (
-      <div aria-label="Slash commands" className="slash-menu">
+      <div aria-label={ariaLabel} className="slash-menu">
         {items.map((item, index) => (
           <button
             aria-pressed={selectedIndex === index}

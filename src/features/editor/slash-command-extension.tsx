@@ -3,8 +3,16 @@ import Suggestion, { exitSuggestion, SuggestionPluginKey } from "@tiptap/suggest
 import { ReactRenderer } from "@tiptap/react";
 import tippy, { type Instance, type Props as TippyProps } from "tippy.js";
 
+import { getLocaleMessages } from "../i18n/messages";
+import type { SupportedLocale } from "../i18n/locale";
 import { getCommandRegistry, type CommandDefinition } from "./command-registry";
 import { SlashMenu, type SlashMenuHandle } from "./SlashMenu";
+
+export type SlashCommandHandler = (
+  editor: Editor,
+  id: string,
+  range?: { from: number; to: number },
+) => boolean | Promise<boolean>;
 
 export function applySlashCommand(
   editor: Editor,
@@ -34,6 +42,8 @@ export function applySlashCommand(
       return chain.toggleStrike().run();
     case "inline-code":
       return chain.toggleCode().run();
+    case "image":
+      return false;
     case "bullet-list":
       return chain.toggleBulletList().run();
     case "ordered-list":
@@ -44,6 +54,8 @@ export function applySlashCommand(
       return chain.toggleBlockquote().run();
     case "code-block":
       return chain.toggleCodeBlock().run();
+    case "table":
+      return chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
     case "horizontal-rule":
       return chain.setHorizontalRule().run();
     default:
@@ -51,9 +63,9 @@ export function applySlashCommand(
   }
 }
 
-function filterCommands(query: string) {
+function filterCommands(locale: SupportedLocale, query: string) {
   const normalizedQuery = query.trim().toLowerCase();
-  const commands = getCommandRegistry("slash");
+  const commands = getCommandRegistry(locale, "slash");
 
   if (!normalizedQuery) {
     return commands.slice(0, 8);
@@ -69,7 +81,16 @@ function filterCommands(query: string) {
     .slice(0, 8);
 }
 
-export function createSlashCommandExtension() {
+export function createSlashCommandExtension(locale: SupportedLocale) {
+  return createSlashCommandExtensionWithHandler(locale);
+}
+
+export function createSlashCommandExtensionWithHandler(
+  locale: SupportedLocale,
+  onExecuteCommand?: SlashCommandHandler,
+) {
+  const messages = getLocaleMessages(locale);
+
   return Extension.create({
     name: "slashCommands",
     addProseMirrorPlugins() {
@@ -78,13 +99,17 @@ export function createSlashCommandExtension() {
           editor: this.editor,
           char: "/",
           allowSpaces: false,
-          items: ({ query }) => filterCommands(query),
+          items: ({ query }) => filterCommands(locale, query),
           command: ({ editor, range, props }) => {
-            const applied = applySlashCommand(editor, props.id, range);
-
-            if (applied) {
-              exitSuggestion(editor.view, SuggestionPluginKey);
-            }
+            void Promise.resolve(
+              onExecuteCommand
+                ? onExecuteCommand(editor, props.id, range)
+                : applySlashCommand(editor, props.id, range),
+            ).then((applied) => {
+              if (applied) {
+                exitSuggestion(editor.view, SuggestionPluginKey);
+              }
+            });
           },
           allow: ({ state }) => {
             const { $from } = state.selection;
@@ -106,6 +131,8 @@ export function createSlashCommandExtension() {
               onStart: (props) => {
                 reactRenderer = new ReactRenderer(SlashMenu, {
                   props: {
+                    ariaLabel: messages.editor.slashMenuAriaLabel,
+                    emptyLabel: messages.editor.slashEmpty,
                     items: props.items,
                     onSelect: (item: CommandDefinition) => {
                       props.command(item);
@@ -132,6 +159,8 @@ export function createSlashCommandExtension() {
               },
               onUpdate(props) {
                 reactRenderer?.updateProps({
+                  ariaLabel: messages.editor.slashMenuAriaLabel,
+                  emptyLabel: messages.editor.slashEmpty,
                   items: props.items,
                   onSelect: (item: CommandDefinition) => {
                     props.command(item);

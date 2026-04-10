@@ -1,5 +1,8 @@
 import type { Editor } from "@tiptap/core";
 
+import { getLocaleMessages } from "../i18n/messages";
+import type { SupportedLocale } from "../i18n/locale";
+
 export type CommandSurface = "bubble" | "slash";
 
 export interface CommandDefinition {
@@ -13,12 +16,11 @@ export interface CommandDefinition {
   run?: (editor: Editor) => boolean;
 }
 
-const COMMANDS: CommandDefinition[] = [
+type CommandBehavior = Omit<CommandDefinition, "description" | "keywords" | "label">;
+
+const COMMAND_BEHAVIORS: CommandBehavior[] = [
   {
     id: "paragraph",
-    label: "Paragraph",
-    description: "Turn the current block into plain paragraph text.",
-    keywords: ["body", "text"],
     surfaces: ["slash"],
     isActive: (editor) => editor.isActive("paragraph"),
     canRun: (editor) => editor.can().chain().focus().setParagraph().run(),
@@ -26,9 +28,6 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "heading-1",
-    label: "Heading 1",
-    description: "Large section heading.",
-    keywords: ["title", "h1", "section"],
     surfaces: ["slash"],
     isActive: (editor) => editor.isActive("heading", { level: 1 }),
     canRun: (editor) => editor.can().chain().focus().toggleHeading({ level: 1 }).run(),
@@ -36,9 +35,6 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "heading-2",
-    label: "Heading 2",
-    description: "Medium section heading.",
-    keywords: ["subtitle", "h2"],
     surfaces: ["slash"],
     isActive: (editor) => editor.isActive("heading", { level: 2 }),
     canRun: (editor) => editor.can().chain().focus().toggleHeading({ level: 2 }).run(),
@@ -46,9 +42,6 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "heading-3",
-    label: "Heading 3",
-    description: "Small section heading.",
-    keywords: ["h3"],
     surfaces: ["slash"],
     isActive: (editor) => editor.isActive("heading", { level: 3 }),
     canRun: (editor) => editor.can().chain().focus().toggleHeading({ level: 3 }).run(),
@@ -56,9 +49,6 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "bold",
-    label: "Bold",
-    description: "Emphasize selected text strongly.",
-    keywords: ["strong"],
     surfaces: ["bubble", "slash"],
     isActive: (editor) => editor.isActive("bold"),
     canRun: (editor) => editor.can().chain().focus().toggleBold().run(),
@@ -66,9 +56,6 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "italic",
-    label: "Italic",
-    description: "Add gentle emphasis.",
-    keywords: ["emphasis", "slanted"],
     surfaces: ["bubble", "slash"],
     isActive: (editor) => editor.isActive("italic"),
     canRun: (editor) => editor.can().chain().focus().toggleItalic().run(),
@@ -76,9 +63,6 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "strike",
-    label: "Strike",
-    description: "Cross out selected text.",
-    keywords: ["strikethrough"],
     surfaces: ["bubble", "slash"],
     isActive: (editor) => editor.isActive("strike"),
     canRun: (editor) => editor.can().chain().focus().toggleStrike().run(),
@@ -86,9 +70,6 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "inline-code",
-    label: "Inline Code",
-    description: "Format selected text as inline code.",
-    keywords: ["code", "snippet"],
     surfaces: ["bubble", "slash"],
     isActive: (editor) => editor.isActive("code"),
     canRun: (editor) => editor.can().chain().focus().toggleCode().run(),
@@ -96,18 +77,18 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "link",
-    label: "Link",
-    description: "Attach a URL to the current selection.",
-    keywords: ["url", "href"],
     surfaces: ["bubble"],
     isActive: (editor) => editor.isActive("link"),
     canRun: (editor) => editor.state.selection.from !== editor.state.selection.to,
   },
   {
+    id: "image",
+    surfaces: ["slash"],
+    isActive: () => false,
+    canRun: () => true,
+  },
+  {
     id: "bullet-list",
-    label: "Bullet List",
-    description: "Create an unordered list.",
-    keywords: ["list", "unordered"],
     surfaces: ["slash"],
     isActive: (editor) => editor.isActive("bulletList"),
     canRun: (editor) => editor.can().chain().focus().toggleBulletList().run(),
@@ -115,9 +96,6 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "ordered-list",
-    label: "Numbered List",
-    description: "Create an ordered list.",
-    keywords: ["list", "ordered", "numbered"],
     surfaces: ["slash"],
     isActive: (editor) => editor.isActive("orderedList"),
     canRun: (editor) => editor.can().chain().focus().toggleOrderedList().run(),
@@ -125,9 +103,6 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "task-list",
-    label: "Checklist",
-    description: "Create a task list with checkboxes.",
-    keywords: ["tasks", "todos", "checklist"],
     surfaces: ["slash"],
     isActive: (editor) => editor.isActive("taskList"),
     canRun: (editor) => editor.can().chain().focus().toggleTaskList().run(),
@@ -135,9 +110,6 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "blockquote",
-    label: "Quote",
-    description: "Wrap the block in a quote.",
-    keywords: ["blockquote", "callout"],
     surfaces: ["slash"],
     isActive: (editor) => editor.isActive("blockquote"),
     canRun: (editor) => editor.can().chain().focus().toggleBlockquote().run(),
@@ -145,19 +117,31 @@ const COMMANDS: CommandDefinition[] = [
   },
   {
     id: "code-block",
-    label: "Code Block",
-    description: "Create a fenced code block.",
-    keywords: ["snippet", "fence"],
     surfaces: ["slash"],
     isActive: (editor) => editor.isActive("codeBlock"),
     canRun: (editor) => editor.can().chain().focus().toggleCodeBlock().run(),
     run: (editor) => editor.chain().focus().toggleCodeBlock().run(),
   },
   {
+    id: "table",
+    surfaces: ["slash"],
+    isActive: (editor) => editor.isActive("table"),
+    canRun: (editor) =>
+      editor
+        .can()
+        .chain()
+        .focus()
+        .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
+        .run(),
+    run: (editor) =>
+      editor
+        .chain()
+        .focus()
+        .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
+        .run(),
+  },
+  {
     id: "horizontal-rule",
-    label: "Divider",
-    description: "Insert a horizontal rule.",
-    keywords: ["separator", "rule", "line"],
     surfaces: ["slash"],
     isActive: () => false,
     canRun: (editor) => editor.can().chain().focus().setHorizontalRule().run(),
@@ -165,20 +149,32 @@ const COMMANDS: CommandDefinition[] = [
   },
 ];
 
-export function getCommandRegistry(surface?: CommandSurface) {
-  if (!surface) {
-    return COMMANDS;
-  }
-
-  return COMMANDS.filter((command) => command.surfaces.includes(surface));
+function getCommandBehavior(id: string) {
+  return COMMAND_BEHAVIORS.find((command) => command.id === id) ?? null;
 }
 
-export function findCommand(id: string) {
-  return COMMANDS.find((command) => command.id === id) ?? null;
+export function getCommandRegistry(locale: SupportedLocale, surface?: CommandSurface) {
+  const englishMessages = getLocaleMessages("en").commands;
+  const localizedMessages = getLocaleMessages(locale).commands;
+  const commands = surface
+    ? COMMAND_BEHAVIORS.filter((command) => command.surfaces.includes(surface))
+    : COMMAND_BEHAVIORS;
+
+  return commands.map((command) => {
+    const localized = localizedMessages[command.id];
+    const english = englishMessages[command.id];
+
+    return {
+      ...command,
+      label: localized.label,
+      description: localized.description,
+      keywords: Array.from(new Set([...localized.keywords, ...english.keywords])),
+    } satisfies CommandDefinition;
+  });
 }
 
 export function applyEditorCommand(editor: Editor, id: string) {
-  const command = findCommand(id);
+  const command = getCommandBehavior(id);
   if (!command?.run) {
     return false;
   }
@@ -187,7 +183,7 @@ export function applyEditorCommand(editor: Editor, id: string) {
 }
 
 export function canApplyEditorCommand(editor: Editor, id: string) {
-  const command = findCommand(id);
+  const command = getCommandBehavior(id);
   return command ? command.canRun(editor) : false;
 }
 

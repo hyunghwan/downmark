@@ -22,15 +22,17 @@ The first release is intentionally limited to syntax we can round-trip safely:
 - headings
 - bold / italic / strike
 - links
+- images
 - inline code
 - fenced code blocks
 - blockquotes
 - bullet lists
 - ordered lists
 - task lists
+- tables
 - horizontal rules
 
-Tables, local image insertion, and richer note blocks are deferred until the Markdown gateway proves stable enough for them.
+Remote images stay as links. Local files and clipboard images are copied next to the Markdown file and stored as relative image links.
 
 ## Development
 

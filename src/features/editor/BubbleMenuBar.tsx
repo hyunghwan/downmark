@@ -1,19 +1,23 @@
 import type { Editor } from "@tiptap/core";
 import { BubbleMenu } from "@tiptap/react/menus";
 
+import { getLocaleMessages } from "../i18n/messages";
+import type { SupportedLocale } from "../i18n/locale";
 import { getCommandRegistry } from "./command-registry";
 
 interface BubbleMenuBarProps {
   editor: Editor;
+  locale: SupportedLocale;
   onApplyCommand: (id: string) => void;
 }
 
-const bubbleCommands = getCommandRegistry("bubble");
+export function BubbleMenuBar({ editor, locale, onApplyCommand }: BubbleMenuBarProps) {
+  const bubbleCommands = getCommandRegistry(locale, "bubble");
+  const messages = getLocaleMessages(locale);
 
-export function BubbleMenuBar({ editor, onApplyCommand }: BubbleMenuBarProps) {
   return (
     <BubbleMenu
-      aria-label="Text formatting"
+      aria-label={messages.editor.bubbleMenuAriaLabel}
       editor={editor}
       className="bubble-menu"
       options={{ placement: "top" }}

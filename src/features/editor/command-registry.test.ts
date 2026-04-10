@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Editor } from "@tiptap/core";
 
 import { MarkdownGateway } from "../documents/markdown-gateway";
-import { applyEditorCommand } from "./command-registry";
+import { applyEditorCommand, getCommandRegistry } from "./command-registry";
 import { createMarkdownExtensions } from "./extensions";
 
 describe("command registry", () => {
@@ -46,5 +46,27 @@ describe("command registry", () => {
     serialized = gateway.fromRich(editor.getJSON());
     expect(serialized).toContain("---");
     expect(serialized).not.toContain("<hr");
+
+    editor.commands.clearContent();
+    expect(applyEditorCommand(editor, "table")).toBe(true);
+    serialized = gateway.fromRich(editor.getJSON());
+    expect(serialized).toContain("|");
+    expect(serialized).toContain("---");
+  });
+
+  it("localizes command labels and keeps English search keywords as fallbacks", () => {
+    const koreanCommands = getCommandRegistry("ko", "bubble");
+    const spanishCommands = getCommandRegistry("es", "slash");
+
+    expect(koreanCommands.find((command) => command.id === "bold")?.label).toBe("굵게");
+    expect(koreanCommands.find((command) => command.id === "bold")?.keywords).toContain(
+      "bold",
+    );
+    expect(spanishCommands.find((command) => command.id === "image")?.label).toBe(
+      "Imagen",
+    );
+    expect(spanishCommands.find((command) => command.id === "heading-1")?.label).toBe(
+      "Encabezado 1",
+    );
   });
 });

@@ -5,11 +5,13 @@ import type { EditorMode } from "../documents/types";
 interface ModeToggleProps {
   mode: EditorMode;
   onChange: (mode: EditorMode) => void;
+  labels: Record<EditorMode, string>;
+  groupAriaLabel: string;
 }
 
 const MODES: EditorMode[] = ["rich", "raw"];
 
-export function ModeToggle({ mode, onChange }: ModeToggleProps) {
+export function ModeToggle({ mode, onChange, labels, groupAriaLabel }: ModeToggleProps) {
   const buttonRefs = useRef<Record<EditorMode, HTMLButtonElement | null>>({
     rich: null,
     raw: null,
@@ -26,7 +28,7 @@ export function ModeToggle({ mode, onChange }: ModeToggleProps) {
 
   return (
     <div
-      aria-label="Editor mode"
+      aria-label={groupAriaLabel}
       className="mode-toggle"
       role="radiogroup"
     >
@@ -55,7 +57,7 @@ export function ModeToggle({ mode, onChange }: ModeToggleProps) {
           tabIndex={mode === item ? 0 : -1}
           type="button"
         >
-          {item === "rich" ? "Rich" : "Raw"}
+          {labels[item]}
         </button>
       ))}
     </div>

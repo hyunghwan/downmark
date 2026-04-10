@@ -8,8 +8,12 @@ use std::{
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
+use sys_locale::get_locale;
 use tauri::{
-    menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
+    menu::{
+        CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem,
+        SubmenuBuilder,
+    },
     AppHandle, Emitter, Manager, Runtime, State,
 };
 
@@ -23,6 +27,10 @@ const MENU_SAVE_FILE_ID: &str = "file.save";
 const MENU_SAVE_FILE_AS_ID: &str = "file.save-as";
 const MENU_RICH_MODE_ID: &str = "view.mode-rich";
 const MENU_RAW_MODE_ID: &str = "view.mode-raw";
+const MENU_LANGUAGE_SYSTEM_ID: &str = "view.language.system";
+const MENU_LANGUAGE_EN_ID: &str = "view.language.en";
+const MENU_LANGUAGE_KO_ID: &str = "view.language.ko";
+const MENU_LANGUAGE_ES_ID: &str = "view.language.es";
 
 struct LaunchPaths(Mutex<Vec<String>>);
 
@@ -67,6 +75,23 @@ struct SaveFileResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PrepareImageAssetRequest {
+    document_path: String,
+    source_path: Option<String>,
+    bytes: Option<Vec<u8>>,
+    mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct PreparedImageAsset {
+    relative_path: String,
+    absolute_path: String,
+    alt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct FileStatusResponse {
     kind: String,
     fingerprint: Option<FileFingerprint>,
@@ -74,11 +99,22 @@ struct FileStatusResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct AppSettings {
+struct StoredAppSettings {
+    #[serde(default)]
     recent_files: Vec<RecentFile>,
+    #[serde(default)]
+    language_preference: LanguagePreference,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct AppSettings {
+    recent_files: Vec<RecentFile>,
+    language_preference: LanguagePreference,
+    locale: SupportedLocale,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct RecentFile {
     path: String,
@@ -96,6 +132,24 @@ struct OpenPathsPayload {
 #[serde(rename_all = "camelCase")]
 struct MenuActionPayload {
     action: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+enum LanguagePreference {
+    #[default]
+    System,
+    En,
+    Ko,
+    Es,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum SupportedLocale {
+    En,
+    Ko,
+    Es,
 }
 
 #[tauri::command]
@@ -174,6 +228,62 @@ fn save_file(request: SaveFileRequest) -> Result<SaveFileResult, String> {
 }
 
 #[tauri::command]
+fn prepare_image_asset(request: PrepareImageAssetRequest) -> Result<PreparedImageAsset, String> {
+    let document_path = PathBuf::from(&request.document_path);
+    let document_directory = document_path
+        .parent()
+        .ok_or_else(|| "Document path must include a parent directory".to_string())?;
+    let document_stem = document_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("document");
+
+    fs::create_dir_all(document_directory).map_err(|error| error.to_string())?;
+
+    let source_count = usize::from(request.source_path.is_some()) + usize::from(request.bytes.is_some());
+    if source_count != 1 {
+        return Err("Provide exactly one image source.".to_string());
+    }
+
+    let extension = if let Some(source_path) = &request.source_path {
+        infer_extension_from_path(Path::new(source_path))
+            .ok_or_else(|| "Unable to determine image extension from source path.".to_string())?
+    } else {
+        infer_extension_from_mime(request.mime_type.as_deref())
+            .ok_or_else(|| "Unable to determine image extension from clipboard data.".to_string())?
+    };
+
+    let target_path = next_image_asset_path(document_directory, document_stem, &extension);
+
+    let alt = if let Some(source_path) = request.source_path {
+        let source = PathBuf::from(source_path);
+        if !source.exists() {
+            return Err("Image source file does not exist.".to_string());
+        }
+
+        fs::copy(&source, &target_path).map_err(|error| error.to_string())?;
+        file_stem_for_display(&source)
+    } else if let Some(bytes) = request.bytes {
+        fs::write(&target_path, bytes).map_err(|error| error.to_string())?;
+        file_stem_for_display(&target_path)
+    } else {
+        return Err("No image source provided.".to_string());
+    };
+
+    let file_name = target_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "Unable to derive image file name.".to_string())?;
+
+    Ok(PreparedImageAsset {
+        relative_path: encode_url_path_component(file_name),
+        absolute_path: target_path.to_string_lossy().into_owned(),
+        alt,
+    })
+}
+
+#[tauri::command]
 fn check_file_status(
     path: String,
     expected_fingerprint: Option<FileFingerprint>,
@@ -214,6 +324,22 @@ fn load_settings(app: AppHandle) -> Result<AppSettings, String> {
 }
 
 #[tauri::command]
+fn set_language_preference(
+    app: AppHandle,
+    language_preference: LanguagePreference,
+) -> Result<AppSettings, String> {
+    let mut settings = read_settings(&app)?;
+    settings.language_preference = language_preference;
+    settings.locale = resolve_locale_from_preference(language_preference, get_locale().as_deref());
+    write_settings(&app, &settings)?;
+
+    let menu = build_app_menu(&app).map_err(|error| error.to_string())?;
+    app.set_menu(menu).map_err(|error| error.to_string())?;
+
+    Ok(settings)
+}
+
+#[tauri::command]
 fn record_recent_file(app: AppHandle, path: String) -> Result<AppSettings, String> {
     let path_buf = PathBuf::from(&path);
     let mut settings = read_settings(&app)?;
@@ -244,12 +370,19 @@ fn remove_recent_file(app: AppHandle, path: String) -> Result<AppSettings, Strin
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let launch_paths = collect_path_args(std::env::args_os().skip(1));
+    let startup_settings = default_app_settings();
 
     tauri::Builder::default()
         .enable_macos_default_menu(false)
-        .menu(build_app_menu)
+        .menu(move |app| build_app_menu_with_settings(app, &startup_settings))
         .on_menu_event(|app, event| {
             handle_menu_event(app, event.id().as_ref());
+        })
+        .setup(|app| {
+            let settings = read_settings(app.handle()).unwrap_or_else(|_| default_app_settings());
+            let menu = build_app_menu_with_settings(app.handle(), &settings)?;
+            app.set_menu(menu)?;
+            Ok(())
         })
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let paths = collect_path_args(args.into_iter().skip(1));
@@ -272,33 +405,63 @@ pub fn run() {
             load_settings,
             open_file,
             path_exists,
+            prepare_image_asset,
             record_recent_file,
             remove_recent_file,
-            save_file
+            save_file,
+            set_language_preference
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
-    let new_draft = MenuItemBuilder::with_id(MENU_NEW_DRAFT_ID, "New")
+    let settings = read_settings(app).unwrap_or_else(|_| default_app_settings());
+    build_app_menu_with_settings(app, &settings)
+}
+
+fn build_app_menu_with_settings<R: Runtime>(
+    app: &AppHandle<R>,
+    settings: &AppSettings,
+) -> tauri::Result<Menu<R>> {
+    let strings = menu_strings(settings.locale);
+
+    let new_draft = MenuItemBuilder::with_id(MENU_NEW_DRAFT_ID, strings.new_draft)
         .accelerator("CmdOrCtrl+N")
         .build(app)?;
-    let open_file = MenuItemBuilder::with_id(MENU_OPEN_FILE_ID, "Open…")
+    let open_file = MenuItemBuilder::with_id(MENU_OPEN_FILE_ID, strings.open_file)
         .accelerator("CmdOrCtrl+O")
         .build(app)?;
-    let save_file = MenuItemBuilder::with_id(MENU_SAVE_FILE_ID, "Save")
+    let save_file = MenuItemBuilder::with_id(MENU_SAVE_FILE_ID, strings.save_file)
         .accelerator("CmdOrCtrl+S")
         .build(app)?;
-    let save_file_as = MenuItemBuilder::with_id(MENU_SAVE_FILE_AS_ID, "Save As…")
+    let save_file_as = MenuItemBuilder::with_id(MENU_SAVE_FILE_AS_ID, strings.save_file_as)
         .accelerator("CmdOrCtrl+Shift+S")
         .build(app)?;
-    let rich_mode = MenuItemBuilder::with_id(MENU_RICH_MODE_ID, "Rich Mode")
+    let rich_mode = MenuItemBuilder::with_id(MENU_RICH_MODE_ID, strings.rich_mode)
         .accelerator("CmdOrCtrl+1")
         .build(app)?;
-    let raw_mode = MenuItemBuilder::with_id(MENU_RAW_MODE_ID, "Raw Mode")
+    let raw_mode = MenuItemBuilder::with_id(MENU_RAW_MODE_ID, strings.raw_mode)
         .accelerator("CmdOrCtrl+2")
         .build(app)?;
+    let language_system = CheckMenuItemBuilder::with_id(
+        MENU_LANGUAGE_SYSTEM_ID,
+        strings.system_default,
+    )
+    .checked(settings.language_preference == LanguagePreference::System)
+    .build(app)?;
+    let language_en =
+        CheckMenuItemBuilder::with_id(MENU_LANGUAGE_EN_ID, strings.english)
+            .checked(settings.language_preference == LanguagePreference::En)
+            .build(app)?;
+    let language_ko =
+        CheckMenuItemBuilder::with_id(MENU_LANGUAGE_KO_ID, strings.korean)
+            .checked(settings.language_preference == LanguagePreference::Ko)
+            .build(app)?;
+    let language_es =
+        CheckMenuItemBuilder::with_id(MENU_LANGUAGE_ES_ID, strings.spanish)
+            .checked(settings.language_preference == LanguagePreference::Es)
+            .build(app)?;
 
     let separator = PredefinedMenuItem::separator(app)?;
     let close_window = PredefinedMenuItem::close_window(app, None)?;
@@ -318,14 +481,14 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 
     #[cfg(target_os = "macos")]
     let app_menu = {
-        let about = PredefinedMenuItem::about(app, Some("About downmark"), None)?;
+        let about = PredefinedMenuItem::about(app, Some(strings.about), None)?;
         let hide = PredefinedMenuItem::hide(app, None)?;
         let hide_others = PredefinedMenuItem::hide_others(app, None)?;
         let show_all = PredefinedMenuItem::show_all(app, None)?;
         let services = PredefinedMenuItem::services(app, None)?;
         let quit = PredefinedMenuItem::quit(app, None)?;
         Some(
-            SubmenuBuilder::new(app, "downmark")
+            SubmenuBuilder::new(app, strings.app_name)
                 .item(&about)
                 .separator()
                 .item(&services)
@@ -341,7 +504,7 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     #[cfg(not(target_os = "macos"))]
     let app_menu: Option<tauri::menu::Submenu<R>> = None;
 
-    let file_menu = SubmenuBuilder::new(app, "File")
+    let file_menu = SubmenuBuilder::new(app, strings.file_menu)
         .item(&new_draft)
         .item(&open_file)
         .separator()
@@ -351,7 +514,7 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&close_window)
         .build()?;
 
-    let edit_menu = SubmenuBuilder::new(app, "Edit")
+    let edit_menu = SubmenuBuilder::new(app, strings.edit_menu)
         .item(&undo)
         .item(&redo)
         .item(&separator)
@@ -361,12 +524,21 @@ fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .item(&select_all)
         .build()?;
 
-    let view_menu = SubmenuBuilder::new(app, "View")
-        .item(&rich_mode)
-        .item(&raw_mode)
+    let language_menu = SubmenuBuilder::new(app, strings.language_menu)
+        .item(&language_system)
+        .item(&language_en)
+        .item(&language_ko)
+        .item(&language_es)
         .build()?;
 
-    let mut window_builder = SubmenuBuilder::new(app, "Window")
+    let view_menu = SubmenuBuilder::new(app, strings.view_menu)
+        .item(&rich_mode)
+        .item(&raw_mode)
+        .separator()
+        .item(&language_menu)
+        .build()?;
+
+    let mut window_builder = SubmenuBuilder::new(app, strings.window_menu)
         .item(&minimize)
         .item(&maximize);
     if let Some(fullscreen) = &fullscreen {
@@ -395,6 +567,10 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
         MENU_SAVE_FILE_AS_ID => Some("save-file-as"),
         MENU_RICH_MODE_ID => Some("set-rich-mode"),
         MENU_RAW_MODE_ID => Some("set-raw-mode"),
+        MENU_LANGUAGE_SYSTEM_ID => Some("set-language-system"),
+        MENU_LANGUAGE_EN_ID => Some("set-language-en"),
+        MENU_LANGUAGE_KO_ID => Some("set-language-ko"),
+        MENU_LANGUAGE_ES_ID => Some("set-language-es"),
         _ => None,
     };
 
@@ -412,6 +588,88 @@ fn emit_menu_action<R: Runtime>(app: &AppHandle<R>, action: &str) {
         let _ = window.emit(MENU_ACTION_EVENT, payload);
     } else {
         let _ = app.emit(MENU_ACTION_EVENT, payload);
+    }
+}
+
+struct MenuStrings {
+    about: &'static str,
+    app_name: &'static str,
+    edit_menu: &'static str,
+    english: &'static str,
+    file_menu: &'static str,
+    korean: &'static str,
+    language_menu: &'static str,
+    new_draft: &'static str,
+    open_file: &'static str,
+    raw_mode: &'static str,
+    rich_mode: &'static str,
+    save_file: &'static str,
+    save_file_as: &'static str,
+    spanish: &'static str,
+    system_default: &'static str,
+    view_menu: &'static str,
+    window_menu: &'static str,
+}
+
+fn menu_strings(locale: SupportedLocale) -> MenuStrings {
+    match locale {
+        SupportedLocale::Ko => MenuStrings {
+            about: "downmark 정보",
+            app_name: "downmark",
+            edit_menu: "편집",
+            english: "English",
+            file_menu: "파일",
+            korean: "한국어",
+            language_menu: "언어",
+            new_draft: "새 문서",
+            open_file: "열기…",
+            raw_mode: "원문 모드",
+            rich_mode: "리치 모드",
+            save_file: "저장",
+            save_file_as: "다른 이름으로 저장…",
+            spanish: "Español",
+            system_default: "시스템 기본값",
+            view_menu: "보기",
+            window_menu: "윈도우",
+        },
+        SupportedLocale::Es => MenuStrings {
+            about: "Acerca de downmark",
+            app_name: "downmark",
+            edit_menu: "Editar",
+            english: "English",
+            file_menu: "Archivo",
+            korean: "한국어",
+            language_menu: "Idioma",
+            new_draft: "Nuevo",
+            open_file: "Abrir…",
+            raw_mode: "Modo sin formato",
+            rich_mode: "Modo enriquecido",
+            save_file: "Guardar",
+            save_file_as: "Guardar como…",
+            spanish: "Español",
+            system_default: "Predeterminado del sistema",
+            view_menu: "Ver",
+            window_menu: "Ventana",
+        },
+        SupportedLocale::En => MenuStrings {
+            about: "About downmark",
+            app_name: "downmark",
+            edit_menu: "Edit",
+            english: "English",
+            file_menu: "File",
+            korean: "한국어",
+            language_menu: "Language",
+            new_draft: "New",
+            open_file: "Open…",
+            raw_mode: "Raw Mode",
+            rich_mode: "Rich Mode",
+            save_file: "Save",
+            save_file_as: "Save As…",
+            spanish: "Español",
+            system_default: "System Default",
+            view_menu: "View",
+            window_menu: "Window",
+        },
     }
 }
 
@@ -444,32 +702,76 @@ where
         .collect()
 }
 
-fn read_settings(app: &AppHandle) -> Result<AppSettings, String> {
+fn read_settings<R: Runtime>(app: &AppHandle<R>) -> Result<AppSettings, String> {
     let path = settings_path(app)?;
     if !path.exists() {
-        return Ok(AppSettings::default());
+        return Ok(default_app_settings());
     }
 
     let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    serde_json::from_str(&content).map_err(|error| error.to_string())
+    let stored_settings: StoredAppSettings =
+        serde_json::from_str(&content).map_err(|error| error.to_string())?;
+    Ok(hydrate_settings(stored_settings))
 }
 
-fn write_settings(app: &AppHandle, settings: &AppSettings) -> Result<(), String> {
+fn write_settings<R: Runtime>(app: &AppHandle<R>, settings: &AppSettings) -> Result<(), String> {
     let path = settings_path(app)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
 
-    let content = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
+    let content = serde_json::to_string_pretty(&StoredAppSettings {
+        recent_files: settings.recent_files.clone(),
+        language_preference: settings.language_preference,
+    })
+    .map_err(|error| error.to_string())?;
     fs::write(path, content).map_err(|error| error.to_string())
 }
 
-fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn settings_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_config_dir()
         .map_err(|error| error.to_string())?;
     Ok(dir.join(SETTINGS_FILE_NAME))
+}
+
+fn default_app_settings() -> AppSettings {
+    hydrate_settings(StoredAppSettings::default())
+}
+
+fn hydrate_settings(stored_settings: StoredAppSettings) -> AppSettings {
+    AppSettings {
+        recent_files: stored_settings.recent_files,
+        language_preference: stored_settings.language_preference,
+        locale: resolve_locale_from_preference(
+            stored_settings.language_preference,
+            get_locale().as_deref(),
+        ),
+    }
+}
+
+fn resolve_locale_from_preference(
+    preference: LanguagePreference,
+    system_locale: Option<&str>,
+) -> SupportedLocale {
+    match preference {
+        LanguagePreference::System => resolve_supported_locale(system_locale),
+        LanguagePreference::En => SupportedLocale::En,
+        LanguagePreference::Ko => SupportedLocale::Ko,
+        LanguagePreference::Es => SupportedLocale::Es,
+    }
+}
+
+fn resolve_supported_locale(raw_locale: Option<&str>) -> SupportedLocale {
+    let normalized = raw_locale.unwrap_or("en").trim().to_lowercase();
+    let primary_tag = normalized.split(['-', '_']).next().unwrap_or("en");
+
+    match primary_tag {
+        "ko" => SupportedLocale::Ko,
+        "es" => SupportedLocale::Es,
+        _ => SupportedLocale::En,
+    }
 }
 
 fn fingerprint_for_existing_path(path: &Path) -> std::io::Result<FileFingerprint> {
@@ -547,6 +849,79 @@ fn file_name_for_display(path: &Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
+fn file_stem_for_display(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| file_name_for_display(path))
+}
+
+fn infer_extension_from_path(path: &Path) -> Option<String> {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .and_then(sanitize_extension)
+}
+
+fn infer_extension_from_mime(mime_type: Option<&str>) -> Option<String> {
+    let normalized = mime_type?.trim().to_ascii_lowercase();
+    let extension = match normalized.as_str() {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "image/bmp" => "bmp",
+        "image/tiff" => "tiff",
+        "image/x-icon" | "image/vnd.microsoft.icon" => "ico",
+        "image/avif" => "avif",
+        _ => return None,
+    };
+
+    Some(extension.to_string())
+}
+
+fn sanitize_extension(raw: &str) -> Option<String> {
+    let normalized = raw.trim().trim_start_matches('.').to_ascii_lowercase();
+    if normalized.is_empty() || !normalized.chars().all(|character| character.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+
+    Some(normalized)
+}
+
+fn next_image_asset_path(directory: &Path, document_stem: &str, extension: &str) -> PathBuf {
+    let mut index = 1;
+
+    loop {
+        let candidate = directory.join(format!("{document_stem}-image-{index}.{extension}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+
+        index += 1;
+    }
+}
+
+fn encode_url_path_component(value: &str) -> String {
+    let mut encoded = String::new();
+
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~' => encoded.push(char::from(*byte)),
+            _ => encoded.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+
+    encoded
+}
+
 fn temp_path_for(path: &Path) -> PathBuf {
     let stem = path
         .file_stem()
@@ -592,7 +967,13 @@ fn replace_existing_file(from: &Path, to: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonicalize_markdown, detect_newline_style, normalize_newlines};
+    use super::{
+        canonicalize_markdown, default_app_settings, detect_newline_style, hydrate_settings,
+        normalize_newlines, prepare_image_asset, resolve_supported_locale, AppSettings,
+        LanguagePreference, PrepareImageAssetRequest, PreparedImageAsset, RecentFile,
+        StoredAppSettings, SupportedLocale,
+    };
+    use std::{fs, path::PathBuf};
 
     #[test]
     fn canonicalize_markdown_replaces_crlf() {
@@ -608,5 +989,147 @@ mod tests {
     fn detect_newline_style_prefers_crlf() {
         assert_eq!(detect_newline_style("a\r\nb"), "crlf");
         assert_eq!(detect_newline_style("a\nb"), "lf");
+    }
+
+    #[test]
+    fn resolves_korean_locale() {
+        assert_eq!(resolve_supported_locale(Some("ko-KR")), SupportedLocale::Ko);
+    }
+
+    #[test]
+    fn resolves_spanish_locale() {
+        assert_eq!(resolve_supported_locale(Some("es-MX")), SupportedLocale::Es);
+    }
+
+    #[test]
+    fn falls_back_to_english_locale() {
+        assert_eq!(resolve_supported_locale(Some("fr-FR")), SupportedLocale::En);
+    }
+
+    #[test]
+    fn stored_settings_default_to_system_language() {
+        let settings = default_app_settings();
+
+        assert_eq!(settings.language_preference, LanguagePreference::System);
+    }
+
+    #[test]
+    fn settings_round_trip_through_storage_format() {
+        let stored = StoredAppSettings {
+            recent_files: vec![RecentFile {
+                path: "/notes/current.md".to_string(),
+                display_name: "current.md".to_string(),
+                last_opened_ms: 42,
+            }],
+            language_preference: LanguagePreference::Ko,
+        };
+        let json = serde_json::to_string(&stored).expect("serializes settings");
+        let decoded: StoredAppSettings =
+            serde_json::from_str(&json).expect("deserializes settings");
+        let hydrated = hydrate_settings(decoded);
+
+        assert_eq!(
+            hydrated,
+            AppSettings {
+                recent_files: vec![RecentFile {
+                    path: "/notes/current.md".to_string(),
+                    display_name: "current.md".to_string(),
+                    last_opened_ms: 42,
+                }],
+                language_preference: LanguagePreference::Ko,
+                locale: SupportedLocale::Ko,
+            }
+        );
+    }
+
+    #[test]
+    fn prepare_image_asset_copies_local_files_next_to_document() {
+        let directory = create_test_directory("copy");
+        let source_path = directory.join("screenshot source.png");
+        let document_path = directory.join("My Note.md");
+        fs::write(&source_path, b"png-bytes").expect("writes source image");
+
+        let prepared = prepare_image_asset(PrepareImageAssetRequest {
+            document_path: document_path.to_string_lossy().into_owned(),
+            source_path: Some(source_path.to_string_lossy().into_owned()),
+            bytes: None,
+            mime_type: None,
+        })
+        .expect("copies image");
+
+        assert_eq!(
+            prepared,
+            PreparedImageAsset {
+                relative_path: "My%20Note-image-1.png".to_string(),
+                absolute_path: directory
+                    .join("My Note-image-1.png")
+                    .to_string_lossy()
+                    .into_owned(),
+                alt: "screenshot source".to_string(),
+            }
+        );
+        assert_eq!(
+            fs::read(directory.join("My Note-image-1.png")).expect("reads copied file"),
+            b"png-bytes"
+        );
+
+        fs::remove_dir_all(directory).expect("cleans up temp directory");
+    }
+
+    #[test]
+    fn prepare_image_asset_increments_file_names_when_needed() {
+        let directory = create_test_directory("increment");
+        let source_path = directory.join("clip.png");
+        let document_path = directory.join("current.md");
+        fs::write(&source_path, b"first").expect("writes source image");
+        fs::write(directory.join("current-image-1.png"), b"existing").expect("writes existing");
+
+        let prepared = prepare_image_asset(PrepareImageAssetRequest {
+            document_path: document_path.to_string_lossy().into_owned(),
+            source_path: Some(source_path.to_string_lossy().into_owned()),
+            bytes: None,
+            mime_type: None,
+        })
+        .expect("creates unique file");
+
+        assert_eq!(prepared.relative_path, "current-image-2.png");
+        assert!(directory.join("current-image-2.png").exists());
+
+        fs::remove_dir_all(directory).expect("cleans up temp directory");
+    }
+
+    #[test]
+    fn prepare_image_asset_writes_clipboard_bytes_with_extension_from_mime() {
+        let directory = create_test_directory("clipboard");
+        let document_path = directory.join("capture.md");
+
+        let prepared = prepare_image_asset(PrepareImageAssetRequest {
+            document_path: document_path.to_string_lossy().into_owned(),
+            source_path: None,
+            bytes: Some(vec![1, 2, 3, 4]),
+            mime_type: Some("image/webp".to_string()),
+        })
+        .expect("writes clipboard image");
+
+        assert_eq!(prepared.relative_path, "capture-image-1.webp");
+        assert_eq!(prepared.alt, "capture-image-1");
+        assert_eq!(
+            fs::read(directory.join("capture-image-1.webp")).expect("reads saved bytes"),
+            vec![1, 2, 3, 4]
+        );
+
+        fs::remove_dir_all(directory).expect("cleans up temp directory");
+    }
+
+    fn create_test_directory(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "downmark-tests-{label}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("timestamp")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&path).expect("creates temp directory");
+        path
     }
 }
