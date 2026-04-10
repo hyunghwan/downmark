@@ -10,6 +10,9 @@ jobs:
   publish-tauri:
     permissions:
       contents: write
+    env:
+      HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.KEYCHAIN_PASSWORD != '' }}
+      HAS_WINDOWS_SIGNING: ${{ secrets.WINDOWS_CERTIFICATE != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' && vars.WINDOWS_CERTIFICATE_THUMBPRINT != '' && vars.WINDOWS_TIMESTAMP_URL != '' }}
 
     strategy:
       fail-fast: false
@@ -74,7 +77,7 @@ jobs:
         run: npm ci
 
       - name: Import Apple signing certificate
-        if: runner.os == 'macOS' && secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.KEYCHAIN_PASSWORD != ''
+        if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING == 'true'
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -110,7 +113,7 @@ jobs:
 
       - name: Import Windows signing certificate
         id: windows_signing
-        if: runner.os == 'Windows' && secrets.WINDOWS_CERTIFICATE != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' && vars.WINDOWS_CERTIFICATE_THUMBPRINT != '' && vars.WINDOWS_TIMESTAMP_URL != ''
+        if: runner.os == 'Windows' && env.HAS_WINDOWS_SIGNING == 'true'
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
