@@ -43,12 +43,16 @@
 html,
 body,
 #root {
+  height: 100%;
   min-height: 100%;
   margin: 0;
 }
 
 body {
+  height: 100vh;
+  height: 100dvh;
   min-height: 100vh;
+  min-height: 100dvh;
   overflow: hidden;
   background: var(--surface);
   color: var(--text);
@@ -101,13 +105,16 @@ button:disabled {
 .app-shell {
   display: grid;
   grid-template-rows: var(--titlebar-height) minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
   background: var(--bg);
 }
 
 .app-content {
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  min-width: 0;
   min-height: 0;
   transition: grid-template-columns 160ms ease;
 }
@@ -277,6 +284,8 @@ button:disabled {
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   background: var(--surface);
 }
 
@@ -381,6 +390,7 @@ button:disabled {
 .workspace-body {
   display: flex;
   flex-direction: column;
+  height: 100%;
   min-height: 0;
   background: var(--surface);
 }

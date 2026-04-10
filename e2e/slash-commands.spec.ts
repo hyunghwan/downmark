@@ -144,3 +144,52 @@ test("raw markdown renders cleanly back into the rich editor", async ({ page }) 
   expect(richHtml).toContain("<h1>Heading</h1>");
   expectNoRuntimeErrors(errors);
 });
+
+test("long rich documents stay scrollable inside the editor shell", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await openDownmark(page);
+
+  const scrollMetrics = await page.evaluate(async () => {
+    const bridge = window.__DOWNMARK_TEST__ as DownmarkTestBridge | undefined;
+    if (!bridge) {
+      throw new Error("Missing downmark test bridge.");
+    }
+
+    const longDoc = Array.from(
+      { length: 240 },
+      (_, index) =>
+        `## Section ${index + 1}\n\nParagraph ${index + 1} line one.\n\n- item a\n- item b\n`,
+    ).join("\n");
+
+    await bridge.setRawValue(longDoc);
+    await bridge.setMode("rich");
+
+    const shell = document.querySelector(".editor-shell");
+    if (!(shell instanceof HTMLElement)) {
+      throw new Error("Missing editor shell.");
+    }
+
+    const before = {
+      clientHeight: shell.clientHeight,
+      scrollHeight: shell.scrollHeight,
+      scrollTop: shell.scrollTop,
+    };
+
+    shell.scrollTop = shell.scrollHeight;
+
+    return {
+      before,
+      after: {
+        clientHeight: shell.clientHeight,
+        scrollHeight: shell.scrollHeight,
+        scrollTop: shell.scrollTop,
+      },
+    };
+  });
+
+  expect(scrollMetrics.before.scrollHeight).toBeGreaterThan(
+    scrollMetrics.before.clientHeight,
+  );
+  expect(scrollMetrics.after.scrollTop).toBeGreaterThan(0);
+  expectNoRuntimeErrors(errors);
+});
