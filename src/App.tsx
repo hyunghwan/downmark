@@ -37,6 +37,7 @@ type PromptState =
   | { kind: "external-modified" };
 type DialogResult = string | string[] | null;
 type EditorFocusTarget = "raw" | "rich" | null;
+type SessionUpdate = FileSession | ((current: FileSession) => FileSession);
 
 export interface DialogPort {
   openFile: () => Promise<DialogResult>;
@@ -63,7 +64,7 @@ export interface AppDependencies {
   > & { destroy?: () => void };
   shell: Pick<
     ShellIntegration,
-    "handleInitialOpen" | "handleSecondaryOpen" | "openRecent"
+    "handleInitialOpen" | "handleMenuAction" | "handleSecondaryOpen" | "openRecent"
   >;
   dialogs: DialogPort;
   fileStatusPollMs?: number;
@@ -260,19 +261,14 @@ function App({ dependencies }: AppProps) {
   const pendingSurfaceRestoreRef = useRef<SurfaceRestoreState | null>(null);
   const sidebarVisible = mobileViewport ? mobileSidebarOpen : !desktopSidebarCollapsed;
 
+  sessionRef.current = session;
+  promptStateRef.current = promptState;
+
   useEffect(() => {
     return () => {
       gateway.destroy?.();
     };
   }, [gateway]);
-
-  useEffect(() => {
-    sessionRef.current = session;
-  }, [session]);
-
-  useEffect(() => {
-    promptStateRef.current = promptState;
-  }, [promptState]);
 
   const captureViewportSnapshot = useEffectEvent(() => {
     const viewport = editorViewportRef.current;
@@ -288,6 +284,17 @@ function App({ dependencies }: AppProps) {
     return {
       ratio: viewport.scrollTop / maxScroll,
     } satisfies ScrollSnapshot;
+  });
+
+  const updateSession = useEffectEvent((updater: SessionUpdate) => {
+    const nextSession =
+      typeof updater === "function"
+        ? (updater as (current: FileSession) => FileSession)(sessionRef.current)
+        : updater;
+
+    sessionRef.current = nextSession;
+    setSession(nextSession);
+    return nextSession;
   });
 
   const restoreViewportSnapshot = useEffectEvent((snapshot: ScrollSnapshot | null) => {
@@ -358,7 +365,7 @@ function App({ dependencies }: AppProps) {
       const file = await gateway.load(path);
       const richDoc = gateway.toRich(file.markdown);
       const nextSession = openFileSession(file, richDoc, "rich");
-      setSession(nextSession);
+      updateSession(nextSession);
       setSettings(await gateway.recordRecentFile(path));
       setFocusTarget("rich");
     } catch (error) {
@@ -380,11 +387,14 @@ function App({ dependencies }: AppProps) {
   });
 
   const saveCurrent = useEffectEvent(async (pathOverride?: string) => {
+    const currentSession = sessionRef.current;
     const latestSession =
-      session.mode === "rich" ? syncSessionFromRichEditor(session) : session;
+      currentSession.mode === "rich"
+        ? syncSessionFromRichEditor(currentSession)
+        : currentSession;
 
-    if (latestSession !== session) {
-      setSession(latestSession);
+    if (latestSession !== currentSession) {
+      updateSession(latestSession);
     }
 
     let targetPath = pathOverride;
@@ -404,14 +414,14 @@ function App({ dependencies }: AppProps) {
 
     try {
       const result = await gateway.save(latestSession, targetPath);
-      setSession((current) => markSaved(current, result));
+      updateSession((current) => markSaved(current, result));
       setSettings(await gateway.recordRecentFile(result.path));
       return true;
     } catch (error) {
       const errorMessage = String(error);
       const conflictKind =
         errorMessage === "stale-write" ? "stale-write" : "save-failed";
-      setSession((current) => markConflict(current, conflictKind, errorMessage));
+      updateSession((current) => markConflict(current, conflictKind, errorMessage));
 
       await dialogs.showMessage(
         errorMessage === "stale-write"
@@ -430,7 +440,7 @@ function App({ dependencies }: AppProps) {
   });
 
   const saveAsDialog = useEffectEvent(async () => {
-    const result = await dialogs.saveFile(session.path ?? "Untitled.md");
+    const result = await dialogs.saveFile(sessionRef.current.path ?? "Untitled.md");
 
     if (isStringPath(result)) {
       await saveCurrent(result);
@@ -444,21 +454,24 @@ function App({ dependencies }: AppProps) {
     }
 
     pendingSurfaceRestoreRef.current = {
-      mode: session.mode,
+      mode: "rich",
       rawSelection: null,
       richSelection: null,
       scroll: { ratio: 0 },
     };
-    setSession(createDraftSession(session.mode));
-    setFocusTarget(session.mode);
+    updateSession(createDraftSession("rich"));
+    setFocusTarget("rich");
   });
 
   const requestOpenPath = useEffectEvent(async (path: string) => {
+    const currentSession = sessionRef.current;
     const latestSession =
-      session.mode === "rich" ? syncSessionFromRichEditor(session) : session;
+      currentSession.mode === "rich"
+        ? syncSessionFromRichEditor(currentSession)
+        : currentSession;
 
-    if (latestSession !== session) {
-      setSession(latestSession);
+    if (latestSession !== currentSession) {
+      updateSession(latestSession);
     }
 
     if (latestSession.dirty) {
@@ -473,11 +486,14 @@ function App({ dependencies }: AppProps) {
   });
 
   const requestNewDraft = useEffectEvent(async () => {
+    const currentSession = sessionRef.current;
     const latestSession =
-      session.mode === "rich" ? syncSessionFromRichEditor(session) : session;
+      currentSession.mode === "rich"
+        ? syncSessionFromRichEditor(currentSession)
+        : currentSession;
 
-    if (latestSession !== session) {
-      setSession(latestSession);
+    if (latestSession !== currentSession) {
+      updateSession(latestSession);
     }
 
     if (latestSession.dirty) {
@@ -488,14 +504,14 @@ function App({ dependencies }: AppProps) {
       return;
     }
 
-    setSession(createDraftSession(latestSession.mode));
+    updateSession(createDraftSession("rich"));
     pendingSurfaceRestoreRef.current = {
-      mode: latestSession.mode,
+      mode: "rich",
       rawSelection: null,
       richSelection: null,
       scroll: { ratio: 0 },
     };
-    setFocusTarget(latestSession.mode);
+    setFocusTarget("rich");
   });
 
   const blurEditorSurfaces = useEffectEvent(() => {
@@ -596,14 +612,14 @@ function App({ dependencies }: AppProps) {
     }
 
     if (status.kind === "missing") {
-      setSession((current) =>
+      updateSession((current) =>
         markConflict(current, "missing", "The file was moved or deleted on disk."),
       );
       return;
     }
 
     if (currentSession.dirty) {
-      setSession((current) =>
+      updateSession((current) =>
         markConflict(
           current,
           "externally-modified",
@@ -629,39 +645,10 @@ function App({ dependencies }: AppProps) {
         currentSession.mode === "rich" ? richSelectionRef.current : null,
       scroll: captureViewportSnapshot(),
     };
-    setSession((current) => applyReloadedDocument(current, file, richDoc));
+    updateSession((current) => applyReloadedDocument(current, file, richDoc));
     setSettings(await gateway.recordRecentFile(file.path));
     setFocusTarget(currentSession.mode);
   });
-
-  useEffect(() => {
-    void refreshSettings();
-
-    let unlisten: (() => void) | null = null;
-    void shell
-      .handleSecondaryOpen((paths) => {
-        const nextPath = paths[0];
-        if (nextPath) {
-          void requestOpenPath(nextPath);
-        }
-      })
-      .then((dispose) => {
-        unlisten = dispose;
-      });
-
-    void shell.handleInitialOpen().then((paths) => {
-      const firstPath = paths[0];
-      if (firstPath) {
-        void openPath(firstPath);
-      } else {
-        setFocusTarget("rich");
-      }
-    });
-
-    return () => {
-      unlisten?.();
-    };
-  }, [openPath, refreshSettings, requestOpenPath, shell]);
 
   useEffect(() => {
     const handleResize = () => {
@@ -716,7 +703,8 @@ function App({ dependencies }: AppProps) {
   }, [checkExternalChanges]);
 
   const handleModeChange = useEffectEvent((nextMode: "rich" | "raw") => {
-    if (nextMode === session.mode) {
+    const currentSession = sessionRef.current;
+    if (nextMode === currentSession.mode) {
       return;
     }
 
@@ -730,40 +718,47 @@ function App({ dependencies }: AppProps) {
         richSelection: richSelectionRef.current,
         scroll: viewportSnapshot,
       };
-      const richDoc = gateway.toRich(session.canonicalMarkdown);
-      setSession((current) => syncRichFromMarkdown(current, richDoc, "rich"));
+      const richDoc = gateway.toRich(currentSession.canonicalMarkdown);
+      updateSession((current) => syncRichFromMarkdown(current, richDoc, "rich"));
       setFocusTarget("rich");
       return;
     }
 
     rememberRichSelection();
     const latestSession =
-      session.mode === "rich" ? syncSessionFromRichEditor(session) : session;
+      currentSession.mode === "rich"
+        ? syncSessionFromRichEditor(currentSession)
+        : currentSession;
     pendingSurfaceRestoreRef.current = {
       mode: "raw",
       rawSelection: rawSelectionRef.current,
       richSelection: null,
       scroll: viewportSnapshot,
     };
-    setSession(switchMode(latestSession, "raw"));
+    updateSession(switchMode(latestSession, "raw"));
     setFocusTarget("raw");
   });
 
   const handleRawChange = useEffectEvent((value: string) => {
-    setSession((current) =>
+    updateSession((current) =>
       replaceRawMarkdown(current, gateway.normalize(value, { newlineStyle: "lf" })),
     );
   });
 
   const handleRichChange = useEffectEvent(
     (doc: import("@tiptap/core").JSONContent) => {
+      if (sessionRef.current.mode !== "rich") {
+        return;
+      }
+
       const markdown = gateway.fromRich(doc);
-      setSession((current) => replaceRichDoc(current, doc, markdown));
+      updateSession((current) => replaceRichDoc(current, doc, markdown));
     },
   );
 
   const handlePromptAction = useEffectEvent(async (actionId: string) => {
-    const currentPrompt = promptState;
+    const currentPrompt = promptStateRef.current;
+    const currentSession = sessionRef.current;
     setPromptState({ kind: "none" });
 
     if (currentPrompt.kind === "unsaved") {
@@ -783,12 +778,12 @@ function App({ dependencies }: AppProps) {
     }
 
     if (currentPrompt.kind === "external-modified") {
-      if (!session.path) {
+      if (!currentSession.path) {
         return;
       }
 
       if (actionId === "reload") {
-        await openPath(session.path);
+        await openPath(currentSession.path);
         return;
       }
 
@@ -806,6 +801,70 @@ function App({ dependencies }: AppProps) {
 
     void handlePromptAction("cancel");
   });
+
+  const runMenuAction = useEffectEvent(async (action: string) => {
+    switch (action) {
+      case "new-draft":
+        await requestNewDraft();
+        break;
+      case "open-file":
+        await openFileDialog();
+        break;
+      case "save-file":
+        await saveCurrent();
+        break;
+      case "save-file-as":
+        await saveAsDialog();
+        break;
+      case "set-rich-mode":
+        handleModeChange("rich");
+        break;
+      case "set-raw-mode":
+        handleModeChange("raw");
+        break;
+      default:
+        break;
+    }
+  });
+
+  useEffect(() => {
+    void refreshSettings();
+
+    let unlistenOpen: (() => void) | null = null;
+    let unlistenMenu: (() => void) | null = null;
+    void shell
+      .handleSecondaryOpen((paths) => {
+        const nextPath = paths[0];
+        if (nextPath) {
+          void requestOpenPath(nextPath);
+        }
+      })
+      .then((dispose) => {
+        unlistenOpen = dispose;
+      });
+
+    void shell
+      .handleMenuAction((action) => {
+        void runMenuAction(action);
+      })
+      .then((dispose) => {
+        unlistenMenu = dispose;
+      });
+
+    void shell.handleInitialOpen().then((paths) => {
+      const firstPath = paths[0];
+      if (firstPath) {
+        void openPath(firstPath);
+      } else {
+        setFocusTarget("rich");
+      }
+    });
+
+    return () => {
+      unlistenOpen?.();
+      unlistenMenu?.();
+    };
+  }, [shell]);
 
   const handleGlobalKeyDown = useEffectEvent((event: KeyboardEvent) => {
     if (event.defaultPrevented || event.altKey) {
@@ -962,7 +1021,7 @@ function App({ dependencies }: AppProps) {
         }
 
         const newlineStyle = sessionRef.current.newlineStyle;
-        setSession((current) =>
+        updateSession((current) =>
           replaceRawMarkdown(
             current,
             gateway.normalize(value, { newlineStyle }),

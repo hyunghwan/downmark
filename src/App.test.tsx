@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -27,6 +27,7 @@ type TestDependencies = AppDependencies & {
 
 class FakeShell implements ShellPort {
   private readonly listeners = new Set<(paths: string[]) => void>();
+  private readonly menuListeners = new Set<(action: string) => void>();
 
   constructor(private readonly initialPaths: string[] = []) {}
 
@@ -41,6 +42,13 @@ class FakeShell implements ShellPort {
     };
   }
 
+  async handleMenuAction(onAction: (action: string) => void) {
+    this.menuListeners.add(onAction);
+    return () => {
+      this.menuListeners.delete(onAction);
+    };
+  }
+
   async openRecent(path: string) {
     return [path];
   }
@@ -48,6 +56,12 @@ class FakeShell implements ShellPort {
   emit(paths: string[]) {
     for (const listener of this.listeners) {
       listener(paths);
+    }
+  }
+
+  emitMenuAction(action: string) {
+    for (const listener of this.menuListeners) {
+      listener(action);
     }
   }
 }
@@ -514,6 +528,43 @@ describe("downmark app", () => {
     fireEvent.keyDown(window, { key: "S", ctrlKey: true, shiftKey: true });
     await waitFor(() => {
       expect(dependencies.dialogs.saveFileMock).toHaveBeenCalled();
+    });
+  });
+
+  it("switches to raw mode through the shell menu bridge", async () => {
+    const dependencies = renderApp({
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    act(() => {
+      dependencies.shell.emitMenuAction("set-raw-mode");
+    });
+    const textarea = await screen.findByRole("textbox", { name: "Raw markdown editor" });
+    expect(textarea).toHaveValue("# Current\n\nBody");
+  });
+
+  it("opens a fresh rich draft through the shell menu bridge", async () => {
+    const dependencies = renderApp({
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    act(() => {
+      dependencies.shell.emitMenuAction("new-draft");
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { level: 1, name: "Untitled" })).toBeInTheDocument();
+    });
+    expect(screen.getByRole("radio", { name: "Rich" })).toBeChecked();
+    const richEditor = screen.getByRole("textbox", { name: "Rich text editor" });
+    await waitFor(() => {
+      expect(richEditor).toHaveFocus();
+    });
+    await waitFor(() => {
+      expect(richEditor).not.toHaveTextContent(/\S/);
     });
   });
 });

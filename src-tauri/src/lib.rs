@@ -8,11 +8,21 @@ use std::{
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{
+    menu::{Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder},
+    AppHandle, Emitter, Manager, Runtime, State,
+};
 
 const OPEN_REQUEST_EVENT: &str = "downmark://open-paths";
+const MENU_ACTION_EVENT: &str = "downmark://menu-action";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const MAX_RECENT_FILES: usize = 12;
+const MENU_NEW_DRAFT_ID: &str = "file.new";
+const MENU_OPEN_FILE_ID: &str = "file.open";
+const MENU_SAVE_FILE_ID: &str = "file.save";
+const MENU_SAVE_FILE_AS_ID: &str = "file.save-as";
+const MENU_RICH_MODE_ID: &str = "view.mode-rich";
+const MENU_RAW_MODE_ID: &str = "view.mode-raw";
 
 struct LaunchPaths(Mutex<Vec<String>>);
 
@@ -80,6 +90,12 @@ struct RecentFile {
 #[serde(rename_all = "camelCase")]
 struct OpenPathsPayload {
     paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MenuActionPayload {
+    action: String,
 }
 
 #[tauri::command]
@@ -230,6 +246,11 @@ pub fn run() {
     let launch_paths = collect_path_args(std::env::args_os().skip(1));
 
     tauri::Builder::default()
+        .enable_macos_default_menu(false)
+        .menu(build_app_menu)
+        .on_menu_event(|app, event| {
+            handle_menu_event(app, event.id().as_ref());
+        })
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             let paths = collect_path_args(args.into_iter().skip(1));
 
@@ -257,6 +278,141 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let new_draft = MenuItemBuilder::with_id(MENU_NEW_DRAFT_ID, "New")
+        .accelerator("CmdOrCtrl+N")
+        .build(app)?;
+    let open_file = MenuItemBuilder::with_id(MENU_OPEN_FILE_ID, "Open…")
+        .accelerator("CmdOrCtrl+O")
+        .build(app)?;
+    let save_file = MenuItemBuilder::with_id(MENU_SAVE_FILE_ID, "Save")
+        .accelerator("CmdOrCtrl+S")
+        .build(app)?;
+    let save_file_as = MenuItemBuilder::with_id(MENU_SAVE_FILE_AS_ID, "Save As…")
+        .accelerator("CmdOrCtrl+Shift+S")
+        .build(app)?;
+    let rich_mode = MenuItemBuilder::with_id(MENU_RICH_MODE_ID, "Rich Mode")
+        .accelerator("CmdOrCtrl+1")
+        .build(app)?;
+    let raw_mode = MenuItemBuilder::with_id(MENU_RAW_MODE_ID, "Raw Mode")
+        .accelerator("CmdOrCtrl+2")
+        .build(app)?;
+
+    let separator = PredefinedMenuItem::separator(app)?;
+    let close_window = PredefinedMenuItem::close_window(app, None)?;
+    let undo = PredefinedMenuItem::undo(app, None)?;
+    let redo = PredefinedMenuItem::redo(app, None)?;
+    let cut = PredefinedMenuItem::cut(app, None)?;
+    let copy = PredefinedMenuItem::copy(app, None)?;
+    let paste = PredefinedMenuItem::paste(app, None)?;
+    let select_all = PredefinedMenuItem::select_all(app, None)?;
+    let minimize = PredefinedMenuItem::minimize(app, None)?;
+    let maximize = PredefinedMenuItem::maximize(app, None)?;
+
+    #[cfg(target_os = "macos")]
+    let fullscreen = Some(PredefinedMenuItem::fullscreen(app, None)?);
+    #[cfg(not(target_os = "macos"))]
+    let fullscreen: Option<PredefinedMenuItem<R>> = None;
+
+    #[cfg(target_os = "macos")]
+    let app_menu = {
+        let about = PredefinedMenuItem::about(app, Some("About downmark"), None)?;
+        let hide = PredefinedMenuItem::hide(app, None)?;
+        let hide_others = PredefinedMenuItem::hide_others(app, None)?;
+        let show_all = PredefinedMenuItem::show_all(app, None)?;
+        let services = PredefinedMenuItem::services(app, None)?;
+        let quit = PredefinedMenuItem::quit(app, None)?;
+        Some(
+            SubmenuBuilder::new(app, "downmark")
+                .item(&about)
+                .separator()
+                .item(&services)
+                .separator()
+                .item(&hide)
+                .item(&hide_others)
+                .item(&show_all)
+                .separator()
+                .item(&quit)
+                .build()?,
+        )
+    };
+    #[cfg(not(target_os = "macos"))]
+    let app_menu: Option<tauri::menu::Submenu<R>> = None;
+
+    let file_menu = SubmenuBuilder::new(app, "File")
+        .item(&new_draft)
+        .item(&open_file)
+        .separator()
+        .item(&save_file)
+        .item(&save_file_as)
+        .separator()
+        .item(&close_window)
+        .build()?;
+
+    let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .item(&undo)
+        .item(&redo)
+        .item(&separator)
+        .item(&cut)
+        .item(&copy)
+        .item(&paste)
+        .item(&select_all)
+        .build()?;
+
+    let view_menu = SubmenuBuilder::new(app, "View")
+        .item(&rich_mode)
+        .item(&raw_mode)
+        .build()?;
+
+    let mut window_builder = SubmenuBuilder::new(app, "Window")
+        .item(&minimize)
+        .item(&maximize);
+    if let Some(fullscreen) = &fullscreen {
+        window_builder = window_builder.item(fullscreen);
+    }
+    let window_menu = window_builder.build()?;
+
+    let mut menu_builder = MenuBuilder::new(app);
+    if let Some(app_menu) = &app_menu {
+        menu_builder = menu_builder.item(app_menu);
+    }
+
+    menu_builder
+        .item(&file_menu)
+        .item(&edit_menu)
+        .item(&view_menu)
+        .item(&window_menu)
+        .build()
+}
+
+fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    let action = match id {
+        MENU_NEW_DRAFT_ID => Some("new-draft"),
+        MENU_OPEN_FILE_ID => Some("open-file"),
+        MENU_SAVE_FILE_ID => Some("save-file"),
+        MENU_SAVE_FILE_AS_ID => Some("save-file-as"),
+        MENU_RICH_MODE_ID => Some("set-rich-mode"),
+        MENU_RAW_MODE_ID => Some("set-raw-mode"),
+        _ => None,
+    };
+
+    if let Some(action) = action {
+        emit_menu_action(app, action);
+    }
+}
+
+fn emit_menu_action<R: Runtime>(app: &AppHandle<R>, action: &str) {
+    let payload = MenuActionPayload {
+        action: action.to_string(),
+    };
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit(MENU_ACTION_EVENT, payload);
+    } else {
+        let _ = app.emit(MENU_ACTION_EVENT, payload);
+    }
 }
 
 fn collect_path_args<I>(args: I) -> Vec<String>
