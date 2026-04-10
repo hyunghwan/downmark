@@ -53,6 +53,8 @@ export interface LocaleMessages {
   prompts: {
     image: string;
     link: string;
+    languageChangeRestartBody: string;
+    languageChangeRestartTitle: string;
     externalModifiedBody: string;
     externalModifiedTitle: string;
     keepMine: string;
@@ -76,6 +78,7 @@ export interface LocaleMessages {
     richEditorPlaceholder: string;
     slashEmpty: string;
     slashMenuAriaLabel: string;
+    tableMenuAriaLabel: string;
   };
   commands: Record<string, CommandMessages>;
 }
@@ -151,6 +154,9 @@ const EN_MESSAGES: LocaleMessages = {
   prompts: {
     image: "Enter an image URL or absolute file path",
     link: "Enter a URL",
+    languageChangeRestartBody:
+      "The language preference was saved. Relaunch downmark to finish applying it.",
+    languageChangeRestartTitle: "Restart to apply language change",
     externalModifiedBody:
       "The document changed on disk while you still have unsaved edits in downmark.",
     externalModifiedTitle: "File changed on disk",
@@ -175,6 +181,7 @@ const EN_MESSAGES: LocaleMessages = {
     richEditorPlaceholder: "Start typing a note, or use / for commands.",
     slashEmpty: "No matching command",
     slashMenuAriaLabel: "Slash commands",
+    tableMenuAriaLabel: "Table actions",
   },
   commands: {
     paragraph: {
@@ -257,6 +264,16 @@ const EN_MESSAGES: LocaleMessages = {
       description: "Insert a markdown table with a header row.",
       keywords: ["table", "grid", "columns", "rows"],
     },
+    "table-add-row-after": {
+      label: "Add Row Below",
+      description: "Insert a row below the current table row.",
+      keywords: ["table", "row", "below", "add"],
+    },
+    "table-add-column-after": {
+      label: "Add Column Right",
+      description: "Insert a column to the right of the current table column.",
+      keywords: ["table", "column", "right", "add"],
+    },
     "horizontal-rule": {
       label: "Divider",
       description: "Insert a horizontal rule.",
@@ -317,6 +334,9 @@ const KO_MESSAGES: LocaleMessages = {
   prompts: {
     image: "이미지 URL 또는 로컬 절대 경로를 입력하세요",
     link: "URL을 입력하세요",
+    languageChangeRestartBody:
+      "언어 설정을 저장했습니다. 변경을 완전히 적용하려면 downmark를 다시 실행하세요.",
+    languageChangeRestartTitle: "언어 변경을 적용하려면 다시 실행하세요",
     externalModifiedBody:
       "downmark에서 저장하지 않은 변경사항이 있는 동안 디스크의 문서가 바뀌었습니다.",
     externalModifiedTitle: "디스크의 파일이 변경됨",
@@ -341,6 +361,7 @@ const KO_MESSAGES: LocaleMessages = {
     richEditorPlaceholder: "노트를 입력하거나 / 로 명령을 사용하세요.",
     slashEmpty: "일치하는 명령이 없습니다",
     slashMenuAriaLabel: "슬래시 명령",
+    tableMenuAriaLabel: "표 작업",
   },
   commands: {
     paragraph: {
@@ -423,6 +444,16 @@ const KO_MESSAGES: LocaleMessages = {
       description: "헤더 행이 있는 마크다운 테이블을 삽입합니다.",
       keywords: ["테이블", "표", "grid", "table"],
     },
+    "table-add-row-after": {
+      label: "아래 행 추가",
+      description: "현재 표 행 아래에 새 행을 삽입합니다.",
+      keywords: ["테이블", "표", "행", "추가", "row", "table"],
+    },
+    "table-add-column-after": {
+      label: "오른쪽 열 추가",
+      description: "현재 표 열 오른쪽에 새 열을 삽입합니다.",
+      keywords: ["테이블", "표", "열", "추가", "column", "table"],
+    },
     "horizontal-rule": {
       label: "구분선",
       description: "가로 구분선을 삽입합니다.",
@@ -487,6 +518,9 @@ const ES_MESSAGES: LocaleMessages = {
   prompts: {
     image: "Ingresa una URL de imagen o una ruta absoluta local",
     link: "Ingresa una URL",
+    languageChangeRestartBody:
+      "La preferencia de idioma se guardó. Vuelve a abrir downmark para terminar de aplicarla.",
+    languageChangeRestartTitle: "Reinicia para aplicar el cambio de idioma",
     externalModifiedBody:
       "El documento cambió en disco mientras todavía tenías cambios sin guardar en downmark.",
     externalModifiedTitle: "El archivo cambió en disco",
@@ -511,6 +545,7 @@ const ES_MESSAGES: LocaleMessages = {
     richEditorPlaceholder: "Empieza a escribir una nota o usa / para comandos.",
     slashEmpty: "No hay ningún comando coincidente",
     slashMenuAriaLabel: "Comandos con barra",
+    tableMenuAriaLabel: "Acciones de tabla",
   },
   commands: {
     paragraph: {
@@ -592,6 +627,16 @@ const ES_MESSAGES: LocaleMessages = {
       label: "Tabla",
       description: "Inserta una tabla markdown con fila de encabezado.",
       keywords: ["tabla", "grid", "columnas", "filas", "table"],
+    },
+    "table-add-row-after": {
+      label: "Agregar fila abajo",
+      description: "Inserta una fila debajo de la fila actual de la tabla.",
+      keywords: ["tabla", "fila", "abajo", "agregar", "row"],
+    },
+    "table-add-column-after": {
+      label: "Agregar columna a la derecha",
+      description: "Inserta una columna a la derecha de la columna actual.",
+      keywords: ["tabla", "columna", "derecha", "agregar", "column"],
     },
     "horizontal-rule": {
       label: "Separador",

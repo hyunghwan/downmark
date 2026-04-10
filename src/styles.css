@@ -34,6 +34,7 @@
     monospace;
   --drawer-width: 320px;
   --control-height: 28px;
+  --titlebar-height: 52px;
   --content-max-width: 860px;
   --app-bg: #f5f5f3;
   --chrome: #f8f8f6;
@@ -52,6 +53,10 @@
   --warning-soft: rgba(255, 244, 221, 0.92);
   --danger: #b34638;
   --danger-soft: rgba(255, 235, 231, 0.92);
+  --code-surface: #f4f7fc;
+  --code-surface-strong: #eef2f8;
+  --code-border: rgba(43, 104, 255, 0.14);
+  --code-text: #233b67;
   --focus-ring: #2b68ff;
   --focus-shadow: rgba(43, 104, 255, 0.18);
   --overlay: rgba(15, 23, 42, 0.18);
@@ -83,6 +88,10 @@
     --warning-soft: rgba(92, 66, 25, 0.88);
     --danger: #eb9487;
     --danger-soft: rgba(86, 43, 40, 0.88);
+    --code-surface: rgba(138, 174, 255, 0.1);
+    --code-surface-strong: rgba(138, 174, 255, 0.14);
+    --code-border: rgba(138, 174, 255, 0.18);
+    --code-text: #dce6ff;
     --focus-ring: #8aaeff;
     --focus-shadow: rgba(138, 174, 255, 0.2);
     --overlay: rgba(0, 0, 0, 0.32);
@@ -113,6 +122,15 @@ button,
 textarea,
 input {
   font: inherit;
+}
+
+button,
+.workspace-header,
+.sidebar-header,
+.recent-item,
+.banner {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 button {
@@ -206,6 +224,10 @@ input:focus-visible,
   background: var(--overlay);
 }
 
+.sidebar-scrim.is-offset-titlebar {
+  top: var(--titlebar-height);
+}
+
 .app-sidebar {
   position: fixed;
   top: 0;
@@ -220,6 +242,10 @@ input:focus-visible,
   border-right: 1px solid var(--line-strong);
   background: var(--sidebar);
   box-shadow: var(--menu-shadow);
+}
+
+.app-sidebar.is-offset-titlebar {
+  top: var(--titlebar-height);
 }
 
 .workspace-header,
@@ -350,10 +376,19 @@ input:focus-visible,
   border-bottom: 1px solid var(--line);
 }
 
+.workspace-header.is-custom-titlebar {
+  min-height: var(--titlebar-height);
+  padding-inline: 84px 20px;
+}
+
 .workspace-heading {
   gap: 10px;
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.workspace-header.is-custom-titlebar .workspace-heading {
+  gap: 12px;
 }
 
 .workspace-path {
@@ -366,12 +401,38 @@ input:focus-visible,
   font-size: 12px;
 }
 
+.workspace-path.is-file-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .workspace-meta {
   justify-content: flex-end;
   gap: 8px;
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
+}
+
+.workspace-header.is-custom-titlebar .workspace-meta {
+  gap: 10px;
+}
+
+.workspace-drag-spacer {
+  flex: 1 1 auto;
+  min-width: 24px;
+}
+
+body:-webkit-window-inactive .workspace-header.is-custom-titlebar .workspace-path.is-file-title,
+body:-webkit-window-inactive .workspace-header.is-custom-titlebar .workspace-meta {
+  opacity: 0.62;
+}
+
+body:-webkit-window-inactive .workspace-header.is-custom-titlebar .sidebar-toggle-button,
+body:-webkit-window-inactive .workspace-header.is-custom-titlebar .mode-toggle {
+  opacity: 0.68;
+  filter: saturate(0.3);
 }
 
 .workspace-meta-item {
@@ -443,6 +504,7 @@ input:focus-visible,
 }
 
 .editor-shell {
+  --editor-zoom: 1;
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
@@ -455,6 +517,22 @@ input:focus-visible,
   display: block;
   width: 100%;
   min-height: 100%;
+}
+
+.rich-editor {
+  position: relative;
+}
+
+.table-floating-menu-anchor {
+  position: sticky;
+  top: 12px;
+  z-index: 4;
+  display: flex;
+  justify-content: flex-end;
+  width: min(100%, var(--content-max-width));
+  height: 0;
+  margin: 0 auto;
+  pointer-events: none;
 }
 
 .raw-textarea,
@@ -475,19 +553,21 @@ input:focus-visible,
 .raw-textarea {
   resize: none;
   overflow: hidden;
-  padding: 34px 28px 96px;
+  padding: calc(34px * var(--editor-zoom)) calc(28px * var(--editor-zoom))
+    calc(96px * var(--editor-zoom));
   font-family: var(--mono-font);
-  font-size: 14px;
+  font-size: calc(14px * var(--editor-zoom));
   line-height: 1.72;
 }
 
 .rich-editor .tiptap {
-  padding: 34px 28px 96px;
+  padding: calc(34px * var(--editor-zoom)) calc(28px * var(--editor-zoom))
+    calc(96px * var(--editor-zoom));
   overflow: visible;
   font-family: var(--ui-font);
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 15px;
+  font-size: calc(15px * var(--editor-zoom));
   line-height: 1.72;
 }
 
@@ -519,15 +599,15 @@ input:focus-visible,
 }
 
 .tiptap h1 {
-  font-size: 1.68rem;
+  font-size: calc(1.68rem * var(--editor-zoom));
 }
 
 .tiptap h2 {
-  font-size: 1.38rem;
+  font-size: calc(1.38rem * var(--editor-zoom));
 }
 
 .tiptap h3 {
-  font-size: 1.12rem;
+  font-size: calc(1.12rem * var(--editor-zoom));
 }
 
 .tiptap p,
@@ -552,24 +632,31 @@ input:focus-visible,
 }
 
 .tiptap code {
-  padding: 0.08rem 0.32rem;
+  padding: 0.12rem 0.38rem;
+  border: 1px solid var(--code-border);
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--code-surface-strong);
+  color: var(--code-text);
   font-family: var(--mono-font);
-  font-size: 0.9em;
+  font-size: 0.92em;
+  font-weight: 500;
 }
 
 .tiptap pre {
   padding: 0.9rem 0.95rem;
-  border: 1px solid var(--line);
+  border: 1px solid var(--code-border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
+  background: linear-gradient(180deg, var(--code-surface) 0%, var(--code-surface-strong) 100%);
+  color: var(--code-text);
   overflow: auto;
 }
 
 .tiptap pre code {
   padding: 0;
+  border: none;
   background: transparent;
+  color: inherit;
+  font-weight: 400;
 }
 
 .tiptap img {
@@ -630,6 +717,7 @@ input:focus-visible,
 }
 
 .bubble-menu,
+.table-floating-menu,
 .slash-menu {
   border: 1px solid var(--line-strong);
   border-radius: 10px;
@@ -637,13 +725,15 @@ input:focus-visible,
   box-shadow: var(--menu-shadow);
 }
 
-.bubble-menu {
+.bubble-menu,
+.table-floating-menu {
   display: inline-flex;
   gap: 2px;
   padding: 3px;
 }
 
-.bubble-menu button {
+.bubble-menu button,
+.table-floating-menu button {
   padding: 5px 7px;
   border: none;
   border-radius: 7px;
@@ -653,8 +743,16 @@ input:focus-visible,
 }
 
 .bubble-menu button.is-active,
-.bubble-menu button:hover {
+.bubble-menu button:hover,
+.table-floating-menu button:hover {
   background: var(--surface-hover);
+}
+
+.table-floating-menu {
+  gap: 4px;
+  padding: 4px;
+  margin-top: 12px;
+  pointer-events: auto;
 }
 
 .slash-menu {
@@ -809,6 +907,18 @@ input:focus-visible,
     flex-wrap: wrap;
     justify-content: flex-start;
     white-space: normal;
+  }
+
+  .workspace-header.is-custom-titlebar {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding-inline: 84px 16px;
+  }
+
+  .workspace-header.is-custom-titlebar .workspace-meta {
+    justify-content: flex-end;
+    white-space: nowrap;
   }
 }
 

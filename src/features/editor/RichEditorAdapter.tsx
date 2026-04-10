@@ -11,6 +11,7 @@ import { Selection, TextSelection } from "@tiptap/pm/state";
 
 import type { SupportedLocale } from "../i18n/locale";
 import { BubbleMenuBar } from "./BubbleMenuBar";
+import { TableFloatingMenu } from "./TableFloatingMenu";
 import {
   applyEditorCommand,
   applyLink,
@@ -24,6 +25,7 @@ import {
 
 export interface EditorImageAsset {
   alt: string;
+  displaySrc?: string;
   src: string;
 }
 
@@ -108,12 +110,25 @@ const RichEditorAdapterInner = forwardRef<RichEditorAdapterHandle, RichEditorAda
           return chain
             .insertContentAt(position, {
               type: "image",
-              attrs: { alt: image.alt, src: image.src },
+              attrs: {
+                alt: image.alt,
+                displaySrc: image.displaySrc ?? null,
+                src: image.src,
+              },
             })
             .run();
         }
 
-        return chain.setImage({ alt: image.alt, src: image.src }).run();
+        return chain
+          .insertContent({
+            type: "image",
+            attrs: {
+              alt: image.alt,
+              displaySrc: image.displaySrc ?? null,
+              src: image.src,
+            },
+          })
+          .run();
       },
     );
 
@@ -328,6 +343,13 @@ const RichEditorAdapterInner = forwardRef<RichEditorAdapterHandle, RichEditorAda
               return;
             }
 
+            applyEditorCommand(editor, commandId);
+          }}
+        />
+        <TableFloatingMenu
+          editor={editor}
+          locale={locale}
+          onApplyCommand={(commandId) => {
             applyEditorCommand(editor, commandId);
           }}
         />

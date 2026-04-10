@@ -11,8 +11,8 @@ use std::{
 use sys_locale::get_locale;
 use tauri::{
     menu::{
-        CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, PredefinedMenuItem,
-        SubmenuBuilder,
+        CheckMenuItem, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder,
+        MenuItemKind, PredefinedMenuItem, Submenu, SubmenuBuilder,
     },
     AppHandle, Emitter, Manager, Runtime, State,
 };
@@ -97,13 +97,15 @@ struct FileStatusResponse {
     fingerprint: Option<FileFingerprint>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredAppSettings {
     #[serde(default)]
     recent_files: Vec<RecentFile>,
     #[serde(default)]
     language_preference: LanguagePreference,
+    #[serde(default = "default_document_zoom_percent")]
+    document_zoom_percent: u16,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -111,6 +113,7 @@ struct StoredAppSettings {
 struct AppSettings {
     recent_files: Vec<RecentFile>,
     language_preference: LanguagePreference,
+    document_zoom_percent: u16,
     locale: SupportedLocale,
 }
 
@@ -150,6 +153,24 @@ enum SupportedLocale {
     En,
     Ko,
     Es,
+}
+
+impl Default for StoredAppSettings {
+    fn default() -> Self {
+        Self {
+            recent_files: Vec::new(),
+            language_preference: LanguagePreference::default(),
+            document_zoom_percent: default_document_zoom_percent(),
+        }
+    }
+}
+
+fn default_document_zoom_percent() -> u16 {
+    100
+}
+
+fn clamp_document_zoom_percent(value: u16) -> u16 {
+    value.clamp(80, 200)
 }
 
 #[tauri::command]
@@ -340,6 +361,88 @@ fn set_language_preference(
 }
 
 #[tauri::command]
+fn set_document_zoom_percent(
+    app: AppHandle,
+    document_zoom_percent: u16,
+) -> Result<AppSettings, String> {
+    let mut settings = read_settings(&app)?;
+    settings.document_zoom_percent = clamp_document_zoom_percent(document_zoom_percent);
+    write_settings(&app, &settings)?;
+    Ok(settings)
+}
+
+fn language_preference_from_menu_id(id: &str) -> Option<LanguagePreference> {
+    match id {
+        MENU_LANGUAGE_SYSTEM_ID => Some(LanguagePreference::System),
+        MENU_LANGUAGE_EN_ID => Some(LanguagePreference::En),
+        MENU_LANGUAGE_KO_ID => Some(LanguagePreference::Ko),
+        MENU_LANGUAGE_ES_ID => Some(LanguagePreference::Es),
+        _ => None,
+    }
+}
+
+fn sync_language_menu_selection<R: Runtime>(
+    app: &AppHandle<R>,
+    language_preference: LanguagePreference,
+) -> tauri::Result<()> {
+    let Some(menu) = app.menu() else {
+        return Ok(());
+    };
+
+    set_language_item_checked(&menu, MENU_LANGUAGE_SYSTEM_ID, language_preference == LanguagePreference::System)?;
+    set_language_item_checked(&menu, MENU_LANGUAGE_EN_ID, language_preference == LanguagePreference::En)?;
+    set_language_item_checked(&menu, MENU_LANGUAGE_KO_ID, language_preference == LanguagePreference::Ko)?;
+    set_language_item_checked(&menu, MENU_LANGUAGE_ES_ID, language_preference == LanguagePreference::Es)?;
+
+    Ok(())
+}
+
+fn set_language_item_checked<R: Runtime>(
+    menu: &Menu<R>,
+    id: &str,
+    checked: bool,
+) -> tauri::Result<()> {
+    if let Some(item) = find_check_menu_item_in_menu(menu, id)? {
+        item.set_checked(checked)?;
+    }
+
+    Ok(())
+}
+
+fn find_check_menu_item_in_menu<R: Runtime>(
+    menu: &Menu<R>,
+    id: &str,
+) -> tauri::Result<Option<CheckMenuItem<R>>> {
+    find_check_menu_item_in_items(menu.items()?, id)
+}
+
+fn find_check_menu_item_in_submenu<R: Runtime>(
+    submenu: &Submenu<R>,
+    id: &str,
+) -> tauri::Result<Option<CheckMenuItem<R>>> {
+    find_check_menu_item_in_items(submenu.items()?, id)
+}
+
+fn find_check_menu_item_in_items<R: Runtime>(
+    items: Vec<MenuItemKind<R>>,
+    id: &str,
+) -> tauri::Result<Option<CheckMenuItem<R>>> {
+    for item in items {
+        if item.id() == &id {
+            return Ok(item.as_check_menuitem().cloned());
+        }
+
+        if let Some(submenu) = item.as_submenu() {
+            if let Some(found) = find_check_menu_item_in_submenu(submenu, id)? {
+                return Ok(Some(found));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+#[tauri::command]
 fn record_recent_file(app: AppHandle, path: String) -> Result<AppSettings, String> {
     let path_buf = PathBuf::from(&path);
     let mut settings = read_settings(&app)?;
@@ -409,6 +512,7 @@ pub fn run() {
             record_recent_file,
             remove_recent_file,
             save_file,
+            set_document_zoom_percent,
             set_language_preference
         ])
         .run(tauri::generate_context!())
@@ -560,6 +664,10 @@ fn build_app_menu_with_settings<R: Runtime>(
 }
 
 fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    if let Some(language_preference) = language_preference_from_menu_id(id) {
+        let _ = sync_language_menu_selection(app, language_preference);
+    }
+
     let action = match id {
         MENU_NEW_DRAFT_ID => Some("new-draft"),
         MENU_OPEN_FILE_ID => Some("open-file"),
@@ -723,6 +831,7 @@ fn write_settings<R: Runtime>(app: &AppHandle<R>, settings: &AppSettings) -> Res
     let content = serde_json::to_string_pretty(&StoredAppSettings {
         recent_files: settings.recent_files.clone(),
         language_preference: settings.language_preference,
+        document_zoom_percent: settings.document_zoom_percent,
     })
     .map_err(|error| error.to_string())?;
     fs::write(path, content).map_err(|error| error.to_string())
@@ -744,6 +853,7 @@ fn hydrate_settings(stored_settings: StoredAppSettings) -> AppSettings {
     AppSettings {
         recent_files: stored_settings.recent_files,
         language_preference: stored_settings.language_preference,
+        document_zoom_percent: clamp_document_zoom_percent(stored_settings.document_zoom_percent),
         locale: resolve_locale_from_preference(
             stored_settings.language_preference,
             get_locale().as_deref(),
@@ -1011,6 +1121,7 @@ mod tests {
         let settings = default_app_settings();
 
         assert_eq!(settings.language_preference, LanguagePreference::System);
+        assert_eq!(settings.document_zoom_percent, 100);
     }
 
     #[test]
@@ -1022,6 +1133,7 @@ mod tests {
                 last_opened_ms: 42,
             }],
             language_preference: LanguagePreference::Ko,
+            document_zoom_percent: 130,
         };
         let json = serde_json::to_string(&stored).expect("serializes settings");
         let decoded: StoredAppSettings =
@@ -1037,6 +1149,7 @@ mod tests {
                     last_opened_ms: 42,
                 }],
                 language_preference: LanguagePreference::Ko,
+                document_zoom_percent: 130,
                 locale: SupportedLocale::Ko,
             }
         );

@@ -1,3 +1,4 @@
+import { mergeAttributes } from "@tiptap/core";
 import { Image } from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -17,6 +18,32 @@ import {
   type SlashCommandHandler,
 } from "./slash-command-extension";
 
+const RichImage = Image.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      displaySrc: {
+        default: null,
+        parseHTML: () => null,
+        renderHTML: () => ({}),
+      },
+    };
+  },
+  renderHTML({ HTMLAttributes, node }) {
+    const { displaySrc: _displaySrc, ...rest } = HTMLAttributes;
+    const displaySrc =
+      typeof node.attrs.displaySrc === "string" && node.attrs.displaySrc.length > 0
+        ? node.attrs.displaySrc
+        : null;
+    const src =
+      displaySrc
+        ? displaySrc
+        : rest.src;
+
+    return ["img", mergeAttributes(this.options.HTMLAttributes, { ...rest, src })];
+  },
+});
+
 export function createMarkdownExtensions() {
   return [
     StarterKit.configure({
@@ -31,7 +58,7 @@ export function createMarkdownExtensions() {
       openOnClick: false,
       protocols: ["http", "https", "mailto"],
     }),
-    Image,
+    RichImage,
     Table.configure({
       renderWrapper: true,
       resizable: false,

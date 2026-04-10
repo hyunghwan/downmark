@@ -141,6 +141,20 @@ const COMMAND_BEHAVIORS: CommandBehavior[] = [
         .run(),
   },
   {
+    id: "table-add-row-after",
+    surfaces: ["slash"],
+    isActive: () => false,
+    canRun: (editor) => editor.can().chain().focus().addRowAfter().run(),
+    run: (editor) => editor.chain().focus().addRowAfter().run(),
+  },
+  {
+    id: "table-add-column-after",
+    surfaces: ["slash"],
+    isActive: () => false,
+    canRun: (editor) => editor.can().chain().focus().addColumnAfter().run(),
+    run: (editor) => editor.chain().focus().addColumnAfter().run(),
+  },
+  {
     id: "horizontal-rule",
     surfaces: ["slash"],
     isActive: () => false,

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { Editor } from "@tiptap/core";
+import { Editor, type JSONContent } from "@tiptap/core";
 
 import { MarkdownGateway } from "../documents/markdown-gateway";
 import { createMarkdownExtensions } from "./extensions";
@@ -98,5 +98,58 @@ describe("slash command helper", () => {
     expect(markdown).toContain("|");
     expect(markdown).toContain("---");
     expect(markdown).not.toContain("/table");
+  });
+
+  it("adds table rows and columns from slash commands inside a table cell", () => {
+    const editor = new Editor({
+      extensions: createMarkdownExtensions(),
+      content: "<p>/table</p>",
+      editable: true,
+      element: document.createElement("div"),
+    });
+    const gateway = new MarkdownGateway();
+
+    editors.push(editor);
+    gateways.push(gateway);
+
+    editor.commands.setTextSelection({ from: 7, to: 7 });
+
+    expect(
+      applySlashCommand(editor, "table", {
+        from: 1,
+        to: 7,
+      }),
+    ).toBe(true);
+
+    const rowCommandStart = editor.state.selection.from;
+    expect(editor.commands.insertContent("/row")).toBe(true);
+    const rowCommandEnd = editor.state.selection.from;
+
+    expect(
+      applySlashCommand(editor, "table-add-row-after", {
+        from: rowCommandStart,
+        to: rowCommandEnd,
+      }),
+    ).toBe(true);
+
+    const columnCommandStart = editor.state.selection.from;
+    expect(editor.commands.insertContent("/col")).toBe(true);
+    const columnCommandEnd = editor.state.selection.from;
+
+    expect(
+      applySlashCommand(editor, "table-add-column-after", {
+        from: columnCommandStart,
+        to: columnCommandEnd,
+      }),
+    ).toBe(true);
+
+    const table = editor.getJSON().content?.[0] as JSONContent | undefined;
+    expect(table?.type).toBe("table");
+    expect(table?.content).toHaveLength(4);
+    expect(table?.content?.[0]?.content).toHaveLength(4);
+
+    const markdown = gateway.fromRich(editor.getJSON());
+    expect(markdown).not.toContain("/row");
+    expect(markdown).not.toContain("/col");
   });
 });

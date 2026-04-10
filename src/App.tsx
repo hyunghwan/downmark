@@ -1,4 +1,8 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
+import type { JSONContent } from "@tiptap/core";
 import {
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   useEffect,
   useEffectEvent,
   useMemo,
@@ -25,6 +29,7 @@ import type {
   EditorMode,
   FileSession,
 } from "./features/documents/types";
+import { DEFAULT_DOCUMENT_ZOOM_PERCENT as DEFAULT_ZOOM_PERCENT } from "./features/documents/types";
 import { ModeToggle } from "./features/editor/ModeToggle";
 import { RawEditorSurface } from "./features/editor/RawEditorSurface";
 import {
@@ -36,9 +41,15 @@ import { getLocaleMessages } from "./features/i18n/messages";
 import {
   getSystemLocale,
   resolveLocaleFromPreference,
+  type LanguagePreference,
   type SupportedLocale,
 } from "./features/i18n/locale";
-import { hasTauriRuntime } from "./features/runtime/tauri-runtime";
+import {
+  hasTauriRuntime,
+  resolveAppPlatform,
+  startWindowDragging,
+  type AppPlatform,
+} from "./features/runtime/tauri-runtime";
 import { ShellIntegration } from "./features/shell/shell-integration";
 
 type DeferredAction =
@@ -79,6 +90,7 @@ export interface AppDependencies {
     | "relocateLocalImageLinks"
     | "removeRecentFile"
     | "save"
+    | "setDocumentZoomPercent"
     | "setLanguagePreference"
     | "toRich"
   > & { destroy?: () => void };
@@ -88,7 +100,9 @@ export interface AppDependencies {
   >;
   dialogs: DialogPort;
   fileStatusPollMs?: number;
+  platform: AppPlatform;
   promptForLink: (prompt: string) => Promise<string | null>;
+  requiresRestartOnLanguageChange?: boolean;
 }
 
 interface AppProps {
@@ -97,10 +111,18 @@ interface AppProps {
 
 const MARKDOWN_EXTENSIONS = ["md", "markdown", "mdown"];
 const EMPTY_SETTINGS: AppSettings = {
+  documentZoomPercent: DEFAULT_ZOOM_PERCENT,
   recentFiles: [],
   languagePreference: "system",
   locale: resolveLocaleFromPreference("system", getSystemLocale()),
 };
+const MIN_DOCUMENT_ZOOM_PERCENT = 80;
+const MAX_DOCUMENT_ZOOM_PERCENT = 200;
+const DOCUMENT_ZOOM_STEP_PERCENT = 10;
+
+function clampDocumentZoomPercent(value: number) {
+  return Math.min(MAX_DOCUMENT_ZOOM_PERCENT, Math.max(MIN_DOCUMENT_ZOOM_PERCENT, value));
+}
 
 interface ScrollSnapshot {
   ratio: number;
@@ -111,6 +133,21 @@ interface RawSelectionSnapshot {
   end: number;
   start: number;
 }
+
+const WINDOW_DRAG_EXCLUDED_SELECTOR = [
+  "button",
+  "input",
+  "textarea",
+  "select",
+  "option",
+  "a",
+  "summary",
+  "[role='button']",
+  "[role='radio']",
+  "[role='switch']",
+  "[contenteditable='true']",
+  "[data-no-window-drag]",
+].join(", ");
 
 interface RichSelectionSnapshot {
   from: number;
@@ -213,6 +250,179 @@ function isAbsoluteFilePath(value: string) {
     value.startsWith("\\\\") ||
     /^[A-Za-z]:[\\/]/.test(value)
   );
+}
+
+function shouldStartTitlebarDrag(target: EventTarget | null) {
+  if (!(target instanceof Node)) {
+    return true;
+  }
+
+  const element = target instanceof Element ? target : target.parentElement;
+  return !element?.closest(WINDOW_DRAG_EXCLUDED_SELECTOR);
+}
+
+function getPathSeparator(path: string) {
+  return path.includes("\\") && !path.includes("/") ? "\\" : "/";
+}
+
+function getParentPath(path: string) {
+  const lastSlash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return lastSlash >= 0 ? path.slice(0, lastSlash) : "";
+}
+
+function joinPath(parent: string, child: string) {
+  if (!parent) {
+    return child;
+  }
+
+  const separator = getPathSeparator(parent);
+  return parent.endsWith("/") || parent.endsWith("\\")
+    ? `${parent}${child}`
+    : `${parent}${separator}${child}`;
+}
+
+function normalizeAbsolutePath(path: string) {
+  const separator = getPathSeparator(path);
+  const normalized = separator === "\\" ? path.replace(/\//g, "\\") : path.replace(/\\/g, "/");
+  let prefix = "";
+  let remainder = normalized;
+
+  if (normalized.startsWith("\\\\")) {
+    prefix = "\\\\";
+    remainder = normalized.slice(2);
+  } else if (/^[A-Za-z]:[\\/]/.test(normalized)) {
+    prefix = `${normalized.slice(0, 2)}${separator}`;
+    remainder = normalized.slice(3);
+  } else if (normalized.startsWith("/") || normalized.startsWith("\\")) {
+    prefix = separator;
+    remainder = normalized.slice(1);
+  }
+
+  const segments = remainder.split(/[\\/]+/);
+  const stack: string[] = [];
+
+  for (const segment of segments) {
+    if (!segment || segment === ".") {
+      continue;
+    }
+
+    if (segment === "..") {
+      if (stack.length > 0 && stack[stack.length - 1] !== "..") {
+        stack.pop();
+      } else if (!prefix) {
+        stack.push(segment);
+      }
+      continue;
+    }
+
+    stack.push(segment);
+  }
+
+  return `${prefix}${stack.join(separator)}`;
+}
+
+function decodePathLike(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function isWebImageUrl(value: string) {
+  return (
+    isRemoteImageUrl(value) ||
+    value.startsWith("//") ||
+    value.startsWith("data:") ||
+    value.startsWith("blob:") ||
+    value.startsWith("asset:") ||
+    value.startsWith("http://asset.localhost")
+  );
+}
+
+function toDisplayFileUrl(path: string) {
+  if (hasTauriRuntime()) {
+    return convertFileSrc(path);
+  }
+
+  const normalized = path.replace(/\\/g, "/");
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    return `file:///${encodeURI(normalized)}`;
+  }
+
+  return `file://${encodeURI(normalized)}`;
+}
+
+function resolveDisplayImageSrc(src: string, documentPath: string | null) {
+  const trimmed = src.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (isWebImageUrl(trimmed)) {
+    return trimmed;
+  }
+
+  const decodedSource = decodePathLike(trimmed);
+  const absolutePath = isAbsoluteFilePath(decodedSource)
+    ? normalizeAbsolutePath(decodedSource)
+    : documentPath
+      ? normalizeAbsolutePath(joinPath(getParentPath(documentPath), decodedSource))
+      : null;
+
+  return absolutePath ? toDisplayFileUrl(absolutePath) : null;
+}
+
+function mapRichDoc(
+  node: JSONContent,
+  transform: (node: JSONContent) => JSONContent,
+): JSONContent {
+  const mappedNode = transform(node);
+  if (!mappedNode.content) {
+    return mappedNode;
+  }
+
+  return {
+    ...mappedNode,
+    content: mappedNode.content.map((child) => mapRichDoc(child, transform)),
+  };
+}
+
+function withDisplayImageSources(doc: JSONContent, documentPath: string | null) {
+  return mapRichDoc(doc, (node) => {
+    if (node.type !== "image") {
+      return node;
+    }
+
+    const source =
+      typeof node.attrs?.src === "string"
+        ? node.attrs.src
+        : "";
+    const displaySrc = resolveDisplayImageSrc(source, documentPath);
+    const nextAttrs = {
+      ...(node.attrs ?? {}),
+      displaySrc,
+    };
+
+    return {
+      ...node,
+      attrs: nextAttrs,
+    };
+  });
+}
+
+function stripDisplayImageSources(doc: JSONContent): JSONContent {
+  return mapRichDoc(doc, (node) => {
+    if (!node.attrs || !Object.prototype.hasOwnProperty.call(node.attrs, "displaySrc")) {
+      return node;
+    }
+
+    const { displaySrc: _displaySrc, ...rest } = node.attrs;
+    return {
+      ...node,
+      attrs: rest,
+    };
+  });
 }
 
 function resolvePromptedFilePath(value: string) {
@@ -356,10 +566,12 @@ export function createDefaultAppDependencies(): AppDependencies {
             console.info(`${options.title}: ${body}`);
           },
         },
+    platform: resolveAppPlatform(),
     async promptForLink(prompt) {
       const href = window.prompt(prompt);
       return href?.trim() ? href.trim() : null;
     },
+    requiresRestartOnLanguageChange: desktopRuntime,
   };
 }
 
@@ -367,8 +579,16 @@ function App({ dependencies }: AppProps) {
   const [appDependencies] = useState(
     () => dependencies ?? createDefaultAppDependencies(),
   );
-  const { dialogs, gateway, promptForLink, shell } = appDependencies;
+  const {
+    dialogs,
+    gateway,
+    platform,
+    promptForLink,
+    requiresRestartOnLanguageChange = false,
+    shell,
+  } = appDependencies;
   const pollIntervalMs = appDependencies.fileStatusPollMs ?? 3000;
+  const usesMacosTitlebar = platform === "macos";
 
   const [locale, setLocale] = useState<SupportedLocale>(EMPTY_SETTINGS.locale);
   const [session, setSession] = useState<FileSession>(() => createDraftSession());
@@ -381,6 +601,7 @@ function App({ dependencies }: AppProps) {
 
   const localeRef = useRef(locale);
   const sessionRef = useRef(session);
+  const settingsRef = useRef(settings);
   const promptStateRef = useRef(promptState);
   const editorViewportRef = useRef<HTMLElement | null>(null);
   const rawEditorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -414,10 +635,41 @@ function App({ dependencies }: AppProps) {
       messages.prompts.link,
     ],
   );
+  const editorShellStyle = useMemo(
+    () =>
+      ({
+        "--editor-zoom": `${settings.documentZoomPercent / 100}`,
+      }) as CSSProperties,
+    [settings.documentZoomPercent],
+  );
+  const richEditorContent = useMemo(
+    () => withDisplayImageSources(session.richDoc, session.path),
+    [session.path, session.richDoc, session.richVersion],
+  );
 
   localeRef.current = locale;
   sessionRef.current = session;
+  settingsRef.current = settings;
   promptStateRef.current = promptState;
+
+  const titlebarDragRegionProps = usesMacosTitlebar
+    ? ({ "data-tauri-drag-region": "" } as const)
+    : {};
+
+  const handleTitlebarMouseDown = useEffectEvent(
+    (event: ReactMouseEvent<HTMLElement>) => {
+      if (!usesMacosTitlebar || event.button !== 0) {
+        return;
+      }
+
+      if (!shouldStartTitlebarDrag(event.target)) {
+        return;
+      }
+
+      event.preventDefault();
+      void startWindowDragging();
+    },
+  );
 
   useEffect(() => {
     return () => {
@@ -517,6 +769,16 @@ function App({ dependencies }: AppProps) {
     },
   );
 
+  const applySettingsWithoutLocaleChange = useEffectEvent((nextSettings: AppSettings) => {
+    const stableSettings = {
+      ...nextSettings,
+      locale: localeRef.current,
+    };
+
+    settingsRef.current = stableSettings;
+    setSettings(stableSettings);
+  });
+
   const refreshSettings = useEffectEvent(async () => {
     const loadedSettings = await gateway.loadSettings();
     const existingRecentFiles = await Promise.all(
@@ -612,19 +874,27 @@ function App({ dependencies }: AppProps) {
           latestSession.path,
           targetPath,
         );
+        const nextRichDoc =
+          relocatedMarkdown !== latestSession.canonicalMarkdown
+            ? gateway.toRich(relocatedMarkdown)
+            : latestSession.richDoc;
 
-        if (relocatedMarkdown !== latestSession.canonicalMarkdown) {
-          sessionToSave = {
-            ...latestSession,
-            canonicalMarkdown: relocatedMarkdown,
-            richDoc: gateway.toRich(relocatedMarkdown),
-            richVersion: latestSession.richVersion + 1,
-          };
-        }
+        sessionToSave = {
+          ...latestSession,
+          canonicalMarkdown: relocatedMarkdown,
+          richDoc: withDisplayImageSources(nextRichDoc, targetPath),
+          richVersion: latestSession.richVersion + 1,
+        };
       }
 
       const result = await gateway.save(sessionToSave, targetPath);
-      updateSession(markSaved(sessionToSave, result));
+      const savedSession = markSaved(sessionToSave, result);
+      updateSession(savedSession);
+
+      if (savedSession.mode === "rich") {
+        richEditorRef.current?.setContent(savedSession.richDoc);
+      }
+
       applySettings(await gateway.recordRecentFile(result.path));
       return true;
     } catch (error) {
@@ -696,6 +966,7 @@ function App({ dependencies }: AppProps) {
 
         return {
           alt: prepared.alt,
+          displaySrc: resolveDisplayImageSrc(prepared.absolutePath, documentPath) ?? undefined,
           src: prepared.relativePath,
         } satisfies EditorImageAsset;
       }
@@ -713,6 +984,7 @@ function App({ dependencies }: AppProps) {
 
       return {
         alt: file.name ? inferAltFromReference(file.name) : prepared.alt,
+        displaySrc: resolveDisplayImageSrc(prepared.absolutePath, documentPath) ?? undefined,
         src: prepared.relativePath,
       } satisfies EditorImageAsset;
     } catch (error) {
@@ -732,6 +1004,7 @@ function App({ dependencies }: AppProps) {
       const url = new URL(trimmed);
       return {
         alt: inferAltFromReference(url.pathname || trimmed),
+        displaySrc: trimmed,
         src: trimmed,
       } satisfies EditorImageAsset;
     }
@@ -755,6 +1028,7 @@ function App({ dependencies }: AppProps) {
 
       return {
         alt: prepared.alt,
+        displaySrc: resolveDisplayImageSrc(prepared.absolutePath, documentPath) ?? undefined,
         src: prepared.relativePath,
       } satisfies EditorImageAsset;
     } catch (error) {
@@ -911,7 +1185,7 @@ function App({ dependencies }: AppProps) {
         return currentSession;
       }
 
-      const markdown = gateway.fromRich(pendingDoc);
+      const markdown = gateway.fromRich(stripDisplayImageSources(pendingDoc));
       if (markdown === currentSession.canonicalMarkdown) {
         return currentSession;
       }
@@ -1046,12 +1320,12 @@ function App({ dependencies }: AppProps) {
   });
 
   const handleRichChange = useEffectEvent(
-    (doc: import("@tiptap/core").JSONContent) => {
+    (doc: JSONContent) => {
       if (sessionRef.current.mode !== "rich") {
         return;
       }
 
-      const markdown = gateway.fromRich(doc);
+      const markdown = gateway.fromRich(stripDisplayImageSources(doc));
       updateSession((current) => replaceRichDoc(current, doc, markdown));
     },
   );
@@ -1102,6 +1376,54 @@ function App({ dependencies }: AppProps) {
     void handlePromptAction("cancel");
   });
 
+  const applyLanguagePreference = useEffectEvent(
+    async (languagePreference: LanguagePreference) => {
+      if (languagePreference === settingsRef.current.languagePreference) {
+        return;
+      }
+
+      if (requiresRestartOnLanguageChange) {
+        const persistedSettings = await gateway.setLanguagePreference(languagePreference);
+        applySettingsWithoutLocaleChange(persistedSettings);
+        await dialogs.showMessage(messages.prompts.languageChangeRestartBody, {
+          kind: "info",
+          title: messages.prompts.languageChangeRestartTitle,
+        });
+        return;
+      }
+
+      const optimisticSettings: AppSettings = {
+        ...settingsRef.current,
+        languagePreference,
+        locale: resolveLocaleFromPreference(languagePreference, getSystemLocale()),
+      };
+
+      applySettings(optimisticSettings, {
+        preserveEditorState: true,
+      });
+
+      const persistedSettings = await gateway.setLanguagePreference(languagePreference);
+      applySettings(persistedSettings);
+    },
+  );
+
+  const applyDocumentZoomPercent = useEffectEvent(async (documentZoomPercent: number) => {
+    const clampedDocumentZoomPercent = clampDocumentZoomPercent(documentZoomPercent);
+    if (clampedDocumentZoomPercent === settingsRef.current.documentZoomPercent) {
+      return;
+    }
+
+    const optimisticSettings: AppSettings = {
+      ...settingsRef.current,
+      documentZoomPercent: clampedDocumentZoomPercent,
+    };
+
+    applySettings(optimisticSettings);
+
+    const persistedSettings = await gateway.setDocumentZoomPercent(clampedDocumentZoomPercent);
+    applySettings(persistedSettings);
+  });
+
   const runMenuAction = useEffectEvent(async (action: string) => {
     switch (action) {
       case "new-draft":
@@ -1123,24 +1445,16 @@ function App({ dependencies }: AppProps) {
         handleModeChange("raw");
         break;
       case "set-language-system":
-        applySettings(await gateway.setLanguagePreference("system"), {
-          preserveEditorState: true,
-        });
+        await applyLanguagePreference("system");
         break;
       case "set-language-en":
-        applySettings(await gateway.setLanguagePreference("en"), {
-          preserveEditorState: true,
-        });
+        await applyLanguagePreference("en");
         break;
       case "set-language-ko":
-        applySettings(await gateway.setLanguagePreference("ko"), {
-          preserveEditorState: true,
-        });
+        await applyLanguagePreference("ko");
         break;
       case "set-language-es":
-        applySettings(await gateway.setLanguagePreference("es"), {
-          preserveEditorState: true,
-        });
+        await applyLanguagePreference("es");
         break;
       default:
         break;
@@ -1210,6 +1524,28 @@ function App({ dependencies }: AppProps) {
     }
 
     const key = event.key.toLowerCase();
+    if (key === "-" || key === "_") {
+      event.preventDefault();
+      void applyDocumentZoomPercent(
+        settingsRef.current.documentZoomPercent - DOCUMENT_ZOOM_STEP_PERCENT,
+      );
+      return;
+    }
+
+    if (key === "=" || key === "+") {
+      event.preventDefault();
+      void applyDocumentZoomPercent(
+        settingsRef.current.documentZoomPercent + DOCUMENT_ZOOM_STEP_PERCENT,
+      );
+      return;
+    }
+
+    if (key === "0") {
+      event.preventDefault();
+      void applyDocumentZoomPercent(DEFAULT_ZOOM_PERCENT);
+      return;
+    }
+
     if (key === "s") {
       event.preventDefault();
       if (event.shiftKey) {
@@ -1464,6 +1800,10 @@ function App({ dependencies }: AppProps) {
     ? messages.workspace.unsaved
     : messages.workspace.saved;
   const documentLocationLabel = session.path ?? messages.workspace.scratchNote;
+  const documentTitleLabel =
+    usesMacosTitlebar && session.path
+      ? session.displayName
+      : documentLocationLabel;
   const trimmedMarkdown = session.canonicalMarkdown.trim();
   const wordCount = trimmedMarkdown
     ? (trimmedMarkdown.match(/\b[\p{L}\p{N}][\p{L}\p{N}'’-]*\b/gu) ?? []).length
@@ -1514,7 +1854,7 @@ function App({ dependencies }: AppProps) {
     <aside
       aria-label={messages.workspace.recentFilesAriaLabel}
       aria-modal="true"
-      className="app-sidebar"
+      className={`app-sidebar ${usesMacosTitlebar ? "is-offset-titlebar" : ""}`}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.preventDefault();
@@ -1546,11 +1886,11 @@ function App({ dependencies }: AppProps) {
         {liveStatus}
       </div>
 
-      <div className="app-shell">
+      <div className={`app-shell ${usesMacosTitlebar ? "platform-macos" : "platform-default"}`}>
         {recentDrawerOpen ? (
           <button
             aria-hidden="true"
-            className="sidebar-scrim"
+            className={`sidebar-scrim ${usesMacosTitlebar ? "is-offset-titlebar" : ""}`}
             onClick={() => {
               closeRecentDrawer();
             }}
@@ -1563,7 +1903,12 @@ function App({ dependencies }: AppProps) {
 
         <main className="workspace">
           <div className="workspace-body">
-            <div className="workspace-header">
+            <div
+              className={`workspace-header ${
+                usesMacosTitlebar ? "is-custom-titlebar" : ""
+              }`}
+              onMouseDownCapture={handleTitlebarMouseDown}
+            >
               <div className="workspace-heading">
                 <button
                   aria-expanded={recentDrawerOpen}
@@ -1578,16 +1923,32 @@ function App({ dependencies }: AppProps) {
                 >
                   <SidebarToggleIcon collapsed={!recentDrawerOpen} />
                 </button>
-                <p className="workspace-path" title={documentLocationLabel}>
-                  {documentLocationLabel}
+                <p
+                  className={`workspace-path ${usesMacosTitlebar ? "is-file-title" : ""}`}
+                  title={documentLocationLabel}
+                  {...titlebarDragRegionProps}
+                >
+                  {documentTitleLabel}
                 </p>
               </div>
+              <div
+                aria-hidden="true"
+                className={`workspace-drag-spacer ${
+                  usesMacosTitlebar ? "is-custom-titlebar" : ""
+                }`}
+                {...titlebarDragRegionProps}
+              />
               <div
                 className="workspace-meta"
                 aria-label={messages.workspace.metadataAriaLabel}
               >
-                <span className="workspace-meta-item">{documentStatsLabel}</span>
-                <span className="workspace-meta-divider" aria-hidden="true" />
+                <span className="workspace-meta-item">
+                  {documentStatsLabel}
+                </span>
+                <span
+                  className="workspace-meta-divider"
+                  aria-hidden="true"
+                />
                 <ModeToggle
                   groupAriaLabel={messages.editor.modeToggleAriaLabel}
                   labels={{
@@ -1597,8 +1958,13 @@ function App({ dependencies }: AppProps) {
                   mode={session.mode}
                   onChange={handleModeChange}
                 />
-                <span className="workspace-meta-divider" aria-hidden="true" />
-                <span className="workspace-meta-item">{saveStateLabel}</span>
+                <span
+                  className="workspace-meta-divider"
+                  aria-hidden="true"
+                />
+                <span className="workspace-meta-item">
+                  {saveStateLabel}
+                </span>
               </div>
             </div>
 
@@ -1608,11 +1974,11 @@ function App({ dependencies }: AppProps) {
               </div>
             ) : null}
 
-            <section className="editor-shell" ref={editorViewportRef}>
+            <section className="editor-shell" ref={editorViewportRef} style={editorShellStyle}>
               {session.mode === "rich" ? (
                 <RichEditorAdapter
                   autoFocus={focusTarget === "rich"}
-                  content={session.richDoc}
+                  content={richEditorContent}
                   contentVersion={session.richVersion}
                   locale={locale}
                   messages={richEditorMessages}

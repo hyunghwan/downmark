@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "downmark",
+        "acceptFirstMouse": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 16,
+          "y": 28
+        },
+        "width": 1180,
+        "height": 820,
+        "minWidth": 820,
+        "minHeight": 620
+      }
+    ]
+  }
+}

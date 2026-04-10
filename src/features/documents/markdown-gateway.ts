@@ -18,6 +18,7 @@ import type {
   SaveFileResult,
   SavePolicy,
 } from "./types";
+import { DEFAULT_DOCUMENT_ZOOM_PERCENT as DEFAULT_ZOOM_PERCENT } from "./types";
 
 function normalizeToLf(markdown: string) {
   return markdown.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
@@ -92,6 +93,7 @@ function isGeneratedSiblingImage(destination: string, documentStem: string) {
 export class MarkdownGateway {
   private readonly editor: Editor;
   private browserSettings: AppSettings = {
+    documentZoomPercent: DEFAULT_ZOOM_PERCENT,
     recentFiles: [],
     languagePreference: "system",
     locale: resolveLocaleFromPreference("system", getSystemLocale()),
@@ -237,6 +239,21 @@ export class MarkdownGateway {
 
     return invoke<AppSettings>("set_language_preference", {
       languagePreference,
+    });
+  }
+
+  async setDocumentZoomPercent(documentZoomPercent: number) {
+    if (!hasTauriRuntime()) {
+      this.browserSettings = {
+        ...this.browserSettings,
+        documentZoomPercent,
+      };
+
+      return structuredClone(this.browserSettings);
+    }
+
+    return invoke<AppSettings>("set_document_zoom_percent", {
+      documentZoomPercent,
     });
   }
 

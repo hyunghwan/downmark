@@ -67,6 +67,7 @@ export interface RecentFile {
 }
 
 export interface AppSettings {
+  documentZoomPercent: number;
   recentFiles: RecentFile[];
   languagePreference: LanguagePreference;
   locale: SupportedLocale;
@@ -96,3 +97,5 @@ export const EMPTY_RICH_DOC: JSONContent = {
   type: "doc",
   content: [{ type: "paragraph" }],
 };
+
+export const DEFAULT_DOCUMENT_ZOOM_PERCENT = 100;

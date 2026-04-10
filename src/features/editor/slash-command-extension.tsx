@@ -56,6 +56,10 @@ export function applySlashCommand(
       return chain.toggleCodeBlock().run();
     case "table":
       return chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+    case "table-add-row-after":
+      return chain.addRowAfter().run();
+    case "table-add-column-after":
+      return chain.addColumnAfter().run();
     case "horizontal-rule":
       return chain.setHorizontalRule().run();
     default:
@@ -63,9 +67,11 @@ export function applySlashCommand(
   }
 }
 
-function filterCommands(locale: SupportedLocale, query: string) {
+function filterCommands(editor: Editor, locale: SupportedLocale, query: string) {
   const normalizedQuery = query.trim().toLowerCase();
-  const commands = getCommandRegistry(locale, "slash");
+  const commands = getCommandRegistry(locale, "slash").filter((command) =>
+    command.canRun(editor),
+  );
 
   if (!normalizedQuery) {
     return commands.slice(0, 8);
@@ -99,7 +105,7 @@ export function createSlashCommandExtensionWithHandler(
           editor: this.editor,
           char: "/",
           allowSpaces: false,
-          items: ({ query }) => filterCommands(locale, query),
+          items: ({ editor, query }) => filterCommands(editor, locale, query),
           command: ({ editor, range, props }) => {
             void Promise.resolve(
               onExecuteCommand

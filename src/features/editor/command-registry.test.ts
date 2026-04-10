@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { Editor } from "@tiptap/core";
+import { Editor, type JSONContent } from "@tiptap/core";
 
 import { MarkdownGateway } from "../documents/markdown-gateway";
 import { applyEditorCommand, getCommandRegistry } from "./command-registry";
@@ -49,6 +49,12 @@ describe("command registry", () => {
 
     editor.commands.clearContent();
     expect(applyEditorCommand(editor, "table")).toBe(true);
+    expect(applyEditorCommand(editor, "table-add-row-after")).toBe(true);
+    expect(applyEditorCommand(editor, "table-add-column-after")).toBe(true);
+    const table = editor.getJSON().content?.[0] as JSONContent | undefined;
+    expect(table?.type).toBe("table");
+    expect(table?.content).toHaveLength(4);
+    expect(table?.content?.[0]?.content).toHaveLength(4);
     serialized = gateway.fromRich(editor.getJSON());
     expect(serialized).toContain("|");
     expect(serialized).toContain("---");

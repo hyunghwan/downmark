@@ -2,6 +2,21 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const { startWindowDraggingMock } = vi.hoisted(() => ({
+  startWindowDraggingMock: vi.fn(async () => undefined),
+}));
+
+vi.mock("./features/runtime/tauri-runtime", async () => {
+  const actual = await vi.importActual<typeof import("./features/runtime/tauri-runtime")>(
+    "./features/runtime/tauri-runtime",
+  );
+
+  return {
+    ...actual,
+    startWindowDragging: startWindowDraggingMock,
+  };
+});
+
 import App, { type AppDependencies, type DialogPort } from "./App";
 import { MarkdownGateway } from "./features/documents/markdown-gateway";
 import type {
@@ -18,6 +33,7 @@ import {
   resolveLocaleFromPreference,
   type LanguagePreference,
 } from "./features/i18n/locale";
+import type { AppPlatform } from "./features/runtime/tauri-runtime";
 
 type GatewayPort = AppDependencies["gateway"];
 type ShellPort = AppDependencies["shell"];
@@ -92,6 +108,7 @@ class FakeGateway implements GatewayPort {
     this.settings =
       settings ??
       ({
+        documentZoomPercent: 100,
         languagePreference: "system",
         locale: resolveLocaleFromPreference("system", getSystemLocale()),
         recentFiles: files.map((file, index) => ({
@@ -292,6 +309,15 @@ class FakeGateway implements GatewayPort {
     return structuredClone(this.settings);
   }
 
+  async setDocumentZoomPercent(documentZoomPercent: number) {
+    this.settings = {
+      ...this.settings,
+      documentZoomPercent,
+    };
+
+    return structuredClone(this.settings);
+  }
+
   markModified(path: string, markdown: string) {
     const loaded = this.createLoadedFile(path, markdown);
     this.files.set(path, loaded);
@@ -345,8 +371,10 @@ function renderApp(options?: {
   dialogOverrides?: Partial<Record<"openFile" | "saveFile", string | null>>;
   files?: Array<{ markdown: string; path: string }>;
   initialPaths?: string[];
+  platform?: AppPlatform;
   pollIntervalMs?: number;
   promptForLink?: (prompt: string) => Promise<string | null>;
+  requiresRestartOnLanguageChange?: boolean;
   settings?: AppSettings;
 }) {
   const files =
@@ -370,7 +398,9 @@ function renderApp(options?: {
     shell,
     dialogs,
     fileStatusPollMs: options?.pollIntervalMs,
+    platform: options?.platform ?? "other",
     promptForLink: options?.promptForLink ?? (async (_prompt) => null),
+    requiresRestartOnLanguageChange: options?.requiresRestartOnLanguageChange,
   };
 
   render(<App dependencies={dependencies} />);
@@ -422,12 +452,15 @@ function createImageFile(
 
 async function waitForOpenFile(name: string) {
   await waitFor(() => {
-    expect(screen.getByText(`/notes/${name}`)).toBeInTheDocument();
+    const documentTitle = screen.getByTitle(`/notes/${name}`);
+    expect(documentTitle).toBeInTheDocument();
+    expect(documentTitle).toHaveTextContent(name);
   });
 }
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  startWindowDraggingMock.mockClear();
   setNavigatorLanguage("en-US");
   setViewportWidth(1024);
 });
@@ -451,16 +484,71 @@ describe("downmark app", () => {
     ).not.toBeInTheDocument();
 
     expect(screen.getByRole("button", { name: "Open recent files" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close window" })).not.toBeInTheDocument();
     const metadata = screen.getByLabelText("Document metadata");
     expect(metadata).toHaveTextContent("2 words · 15 chars");
     expect(metadata).toHaveTextContent("Saved");
     expect(within(metadata).getByRole("radio", { name: "Rich" })).toBeChecked();
   });
 
+  it("renders a macOS overlay header with filename-only label beside native traffic lights", async () => {
+    renderApp({
+      initialPaths: ["/notes/current.md"],
+      platform: "macos",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTitle("/notes/current.md")).toHaveTextContent("current.md");
+    });
+
+    expect(screen.queryByText("/notes/current.md")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close window" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Minimize window" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Zoom window" })).not.toBeInTheDocument();
+
+    const header = document.querySelector(".workspace-header.is-custom-titlebar");
+    const heading = header?.querySelector(".workspace-heading");
+    const dragSpacer = header?.querySelector(".workspace-drag-spacer.is-custom-titlebar");
+    expect(header).not.toBeNull();
+    expect(heading).not.toBeNull();
+    expect(heading?.children[0]).toBe(screen.getByRole("button", { name: "Open recent files" }));
+    expect(heading?.children[1]).toBe(screen.getByTitle("/notes/current.md"));
+    expect(dragSpacer).not.toBeNull();
+    expect(screen.getByTitle("/notes/current.md")).toHaveAttribute("data-tauri-drag-region");
+    expect(dragSpacer).toHaveAttribute("data-tauri-drag-region");
+  });
+
+  it("starts window dragging from non-interactive macOS header areas only", async () => {
+    renderApp({
+      initialPaths: ["/notes/current.md"],
+      platform: "macos",
+    });
+
+    await waitForOpenFile("current.md");
+
+    const header = document.querySelector(".workspace-header.is-custom-titlebar");
+    expect(header).not.toBeNull();
+
+    fireEvent.mouseDown(screen.getByTitle("/notes/current.md"), { button: 0 });
+    expect(startWindowDraggingMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.mouseDown(screen.getByRole("button", { name: "Open recent files" }), {
+      button: 0,
+    });
+    expect(startWindowDraggingMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.mouseDown(screen.getByRole("radio", { name: "Rich" }), { button: 0 });
+    expect(startWindowDraggingMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.mouseDown(header as Element, { button: 0 });
+    expect(startWindowDraggingMock).toHaveBeenCalledTimes(2);
+  });
+
   it("uses the stored language override on first render", async () => {
     renderApp({
       initialPaths: ["/notes/current.md"],
       settings: {
+        documentZoomPercent: 100,
         languagePreference: "ko",
         locale: "ko",
         recentFiles: [],
@@ -527,6 +615,35 @@ describe("downmark app", () => {
     expect(screen.getByRole("radio", { name: "Plano" })).toBeChecked();
     expect(spanishTextarea.selectionStart).toBe(4);
     expect(spanishTextarea.selectionEnd).toBe(9);
+  });
+
+  it("keeps the current screen visible and asks for a restart when language changes are deferred", async () => {
+    const dependencies = renderApp({
+      initialPaths: ["/notes/current.md"],
+      requiresRestartOnLanguageChange: true,
+    });
+
+    await waitForOpenFile("current.md");
+    expect(screen.getByRole("button", { name: "Open recent files" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Rich text editor" })).toBeInTheDocument();
+
+    act(() => {
+      dependencies.shell.emitMenuAction("set-language-ko");
+    });
+
+    await waitFor(() => {
+      expect(dependencies.dialogs.messages).toContainEqual({
+        body:
+          "The language preference was saved. Relaunch downmark to finish applying it.",
+        kind: "info",
+        title: "Restart to apply language change",
+      });
+    });
+
+    expect(screen.getByRole("button", { name: "Open recent files" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Rich text editor" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "최근 파일 열기" })).not.toBeInTheDocument();
+    expect(dependencies.gateway.settings.languagePreference).toBe("ko");
   });
 
   it("renders raw markdown into the rich editor when switching modes", async () => {
@@ -845,6 +962,7 @@ describe("downmark app", () => {
     const dependencies = renderApp({
       initialPaths: ["/notes/current.md"],
       settings: {
+        documentZoomPercent: 100,
         languagePreference: "system",
         locale: "en",
         recentFiles: [
@@ -917,6 +1035,44 @@ describe("downmark app", () => {
     fireEvent.keyDown(window, { key: "S", ctrlKey: true, shiftKey: true });
     await waitFor(() => {
       expect(dependencies.dialogs.saveFileMock).toHaveBeenCalled();
+    });
+  });
+
+  it("supports keyboard shortcuts for document zoom", async () => {
+    const dependencies = renderApp({
+      initialPaths: ["/notes/current.md"],
+      settings: {
+        documentZoomPercent: 120,
+        languagePreference: "system",
+        locale: resolveLocaleFromPreference("system", getSystemLocale()),
+        recentFiles: [],
+      },
+    });
+
+    await waitForOpenFile("current.md");
+
+    const editorShell = document.querySelector(".editor-shell");
+    expect(editorShell).toHaveAttribute("style", "--editor-zoom: 1.2;");
+
+    fireEvent.keyDown(window, { key: "-", ctrlKey: true });
+    await waitFor(() => {
+      expect(dependencies.gateway.settings.documentZoomPercent).toBe(110);
+    });
+    await waitFor(() => {
+      expect(editorShell).toHaveAttribute("style", "--editor-zoom: 1.1;");
+    });
+
+    fireEvent.keyDown(window, { key: "=", ctrlKey: true });
+    await waitFor(() => {
+      expect(dependencies.gateway.settings.documentZoomPercent).toBe(120);
+    });
+
+    fireEvent.keyDown(window, { key: "0", ctrlKey: true });
+    await waitFor(() => {
+      expect(dependencies.gateway.settings.documentZoomPercent).toBe(100);
+    });
+    await waitFor(() => {
+      expect(editorShell).toHaveAttribute("style", "--editor-zoom: 1;");
     });
   });
 
@@ -1031,6 +1187,64 @@ describe("downmark app", () => {
     expect(within(editor).getByRole("table")).toBeInTheDocument();
     expect(within(editor).getByText("Alpha")).toBeInTheDocument();
     expect(within(editor).getByText("2")).toBeInTheDocument();
+  });
+
+  it("shows floating table actions and adds rows and columns from rich mode", async () => {
+    const user = userEvent.setup();
+    renderApp({
+      files: [
+        {
+          path: "/notes/current.md",
+          markdown:
+            "| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n| Beta | 2 |",
+        },
+      ],
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    const editor = await screen.findByRole("textbox", { name: "Rich text editor" });
+    await user.click(within(editor).getByText("Alpha"));
+
+    const toolbar = await screen.findByRole("toolbar", { name: "Table actions" });
+    const getTable = () => within(editor).getByRole("table");
+
+    expect(getTable().querySelectorAll("tr")).toHaveLength(3);
+
+    await user.click(within(toolbar).getByRole("button", { name: "Add Row Below" }));
+
+    await waitFor(() => {
+      expect(getTable().querySelectorAll("tr")).toHaveLength(4);
+    });
+
+    await user.click(within(toolbar).getByRole("button", { name: "Add Column Right" }));
+
+    await waitFor(() => {
+      const firstRow = getTable().querySelector("tr");
+      expect(firstRow?.querySelectorAll("th, td")).toHaveLength(3);
+    });
+  });
+
+  it("renders saved local markdown images with a resolved file URL in rich mode", async () => {
+    renderApp({
+      files: [
+        {
+          path: "/notes/current.md",
+          markdown: "# Current\n\n![photo](current-image-1.png)",
+        },
+      ],
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    const editor = await screen.findByRole("textbox", { name: "Rich text editor" });
+    const image = within(editor).getByRole("img", { name: "photo" });
+
+    await waitFor(() => {
+      expect(image.getAttribute("src")).toBe("file:///notes/current-image-1.png");
+    });
   });
 
   it("inserts a clipboard image into raw mode after saving an untitled document", async () => {
