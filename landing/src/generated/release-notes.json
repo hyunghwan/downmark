@@ -1,0 +1,60 @@
+{
+  "generatedAt": "2026-04-10T22:59:39.783Z",
+  "releaseUrl": "https://github.com/hyunghwan/downmark/releases",
+  "repositoryUrl": "https://github.com/hyunghwan/downmark",
+  "sections": [
+    {
+      "version": "Unreleased",
+      "date": null,
+      "categories": [
+        {
+          "title": "Added",
+          "items": [
+            {
+              "hash": "f23ef2c",
+              "text": "Table editing controls and native titlebar support"
+            },
+            {
+              "hash": "8cf5462",
+              "text": "Image and table markdown support and fix app startup"
+            },
+            {
+              "hash": "a63c8d1",
+              "text": "Native menu bridge and stabilize shell actions"
+            },
+            {
+              "hash": "a93e4f4",
+              "text": "Downmark editor app"
+            }
+          ]
+        },
+        {
+          "title": "Changed",
+          "items": [
+            {
+              "hash": "6d8d3f7",
+              "text": "Tighten titlebar heading"
+            },
+            {
+              "hash": "b29391b",
+              "text": "Polish editor flow and stabilize craft-quality tests"
+            }
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {
+              "hash": "9109fbb",
+              "text": "Long document editor scrolling"
+            },
+            {
+              "hash": "dffd042",
+              "text": "Slash commands and add browser coverage"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

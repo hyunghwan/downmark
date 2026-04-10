@@ -2,7 +2,7 @@
 
 ## Our standard
 
-We want downmark to be a calm, respectful project where contributors can ask questions, share ideas, and disagree constructively.
+We want Downmark to be a calm, respectful project where contributors can ask questions, share ideas, and disagree constructively.
 
 Examples of behavior that help:
 

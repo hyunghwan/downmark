@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping with downmark.
+Thanks for helping with Downmark.
 
 ## Ground rules
 
@@ -31,4 +31,4 @@ source "$HOME/.cargo/env" && cargo check --manifest-path src-tauri/Cargo.toml
 - New editor features must go through `MarkdownGateway`, not direct ad hoc serialization from UI code.
 - If a formatting feature cannot round-trip safely to Markdown, defer it instead of forcing it into v1.
 - Changes to file lifecycle behavior should include tests for dirty state, save failures, and external modifications.
-- Keep UI decisions intentionally simple. downmark should feel closer to Notes or Notepad than a full knowledge base tool.
+- Keep UI decisions intentionally simple. Downmark should feel closer to Notes or Notepad than a full knowledge base tool.

@@ -1,0 +1,83 @@
+.downmark-demo-shell {
+  min-height: 100vh;
+  height: 100vh;
+  padding: 40px 64px 28px;
+  background: transparent;
+}
+
+.downmark-demo-shell.is-embedded {
+  padding: 20px 30px 18px;
+}
+
+.demo-window {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  max-width: 1720px;
+  margin: 0 auto;
+}
+
+.demo-window .app-shell {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 26px;
+  box-shadow:
+    0 2px 6px rgba(18, 15, 12, 0.04),
+    0 8px 18px rgba(18, 15, 12, 0.06);
+}
+
+.downmark-demo-shell.is-embedded .demo-window .app-shell {
+  height: calc(100% - 8px);
+}
+
+.demo-traffic-lights {
+  position: absolute;
+  top: 0;
+  left: 22px;
+  height: 52px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.demo-traffic-lights span {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+}
+
+.demo-traffic-lights .red {
+  background: #ff5f57;
+}
+
+.demo-traffic-lights .yellow {
+  background: #febc2e;
+}
+
+.demo-traffic-lights .green {
+  background: #28c840;
+}
+
+@media (max-width: 900px) {
+  .downmark-demo-shell {
+    padding: 18px 18px 12px;
+  }
+
+  .downmark-demo-shell.is-embedded {
+    padding: 12px 14px 10px;
+  }
+
+  .demo-window .app-shell {
+    border-radius: 18px;
+  }
+
+  .demo-traffic-lights {
+    top: 0;
+    left: 18px;
+    height: 52px;
+    gap: 9px;
+  }
+}

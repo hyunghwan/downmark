@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "downmark",
+  "productName": "Downmark",
   "version": "0.1.0",
   "identifier": "io.github.byun.downmark",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "downmark",
+        "title": "Downmark",
         "acceptFirstMouse": true,
         "width": 1180,
         "height": 820,

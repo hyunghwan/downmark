@@ -1,6 +1,6 @@
-# downmark
+# Downmark
 
-downmark is a tiny Markdown editor for people who want to open one file, read it, change it, and save it back without vaults or extra project setup. It is built with `Tauri v2`, `Rust`, `React`, and `TypeScript`.
+Downmark is a tiny Markdown editor for people who want to open one file, read it, change it, and save it back without vaults or extra project setup. It is built with `Tauri v2`, `Rust`, `React`, and `TypeScript`.
 
 ## What v1 includes
 

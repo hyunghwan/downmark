@@ -101,7 +101,7 @@ function countWithKoreanLabel(value: number, noun: string) {
 
 const EN_MESSAGES: LocaleMessages = {
   intlLocale: getIntlLocale("en"),
-  appTitle: "downmark",
+  appTitle: "Downmark",
   fileDialog: {
     markdownFilterName: "Markdown",
     untitledFileName: "Untitled.md",
@@ -155,10 +155,10 @@ const EN_MESSAGES: LocaleMessages = {
     image: "Enter an image URL or absolute file path",
     link: "Enter a URL",
     languageChangeRestartBody:
-      "The language preference was saved. Relaunch downmark to finish applying it.",
+      "The language preference was saved. Relaunch Downmark to finish applying it.",
     languageChangeRestartTitle: "Restart to apply language change",
     externalModifiedBody:
-      "The document changed on disk while you still have unsaved edits in downmark.",
+      "The document changed on disk while you still have unsaved edits in Downmark.",
     externalModifiedTitle: "File changed on disk",
     keepMine: "Keep Mine",
     reloadFromDisk: "Reload from Disk",
@@ -284,7 +284,7 @@ const EN_MESSAGES: LocaleMessages = {
 
 const KO_MESSAGES: LocaleMessages = {
   intlLocale: getIntlLocale("ko"),
-  appTitle: "downmark",
+  appTitle: "Downmark",
   fileDialog: {
     markdownFilterName: "마크다운",
     untitledFileName: "제목 없음.md",
@@ -335,10 +335,10 @@ const KO_MESSAGES: LocaleMessages = {
     image: "이미지 URL 또는 로컬 절대 경로를 입력하세요",
     link: "URL을 입력하세요",
     languageChangeRestartBody:
-      "언어 설정을 저장했습니다. 변경을 완전히 적용하려면 downmark를 다시 실행하세요.",
+      "언어 설정을 저장했습니다. 변경을 완전히 적용하려면 Downmark를 다시 실행하세요.",
     languageChangeRestartTitle: "언어 변경을 적용하려면 다시 실행하세요",
     externalModifiedBody:
-      "downmark에서 저장하지 않은 변경사항이 있는 동안 디스크의 문서가 바뀌었습니다.",
+      "Downmark에서 저장하지 않은 변경사항이 있는 동안 디스크의 문서가 바뀌었습니다.",
     externalModifiedTitle: "디스크의 파일이 변경됨",
     keepMine: "내 내용 유지",
     reloadFromDisk: "디스크에서 다시 불러오기",
@@ -464,7 +464,7 @@ const KO_MESSAGES: LocaleMessages = {
 
 const ES_MESSAGES: LocaleMessages = {
   intlLocale: getIntlLocale("es"),
-  appTitle: "downmark",
+  appTitle: "Downmark",
   fileDialog: {
     markdownFilterName: "Markdown",
     untitledFileName: "Sin título.md",
@@ -519,10 +519,10 @@ const ES_MESSAGES: LocaleMessages = {
     image: "Ingresa una URL de imagen o una ruta absoluta local",
     link: "Ingresa una URL",
     languageChangeRestartBody:
-      "La preferencia de idioma se guardó. Vuelve a abrir downmark para terminar de aplicarla.",
+      "La preferencia de idioma se guardó. Vuelve a abrir Downmark para terminar de aplicarla.",
     languageChangeRestartTitle: "Reinicia para aplicar el cambio de idioma",
     externalModifiedBody:
-      "El documento cambió en disco mientras todavía tenías cambios sin guardar en downmark.",
+      "El documento cambió en disco mientras todavía tenías cambios sin guardar en Downmark.",
     externalModifiedTitle: "El archivo cambió en disco",
     keepMine: "Conservar el mío",
     reloadFromDisk: "Recargar desde disco",

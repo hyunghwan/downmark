@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-downmark is currently pre-1.0, so the latest `main` branch is the supported version.
+Downmark is currently pre-1.0, so the latest `main` branch is the supported version.
 
 ## Reporting a vulnerability
 

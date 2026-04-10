@@ -4,7 +4,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "downmark",
+        "title": "Downmark",
         "acceptFirstMouse": true,
         "decorations": true,
         "titleBarStyle": "Overlay",

@@ -1,6 +1,6 @@
 # Rendering Preview
 
-이 문서는 downmark의 렌더링을 한 번에 확인하려고 만든 샘플입니다.
+이 문서는 Downmark의 렌더링을 한 번에 확인하려고 만든 샘플입니다.
 
 문장 안에서 `inline code`가 plain text와 얼마나 구분되는지,
 그리고 ~~strike~~ / ~~취소선~~ 이 충분히 눈에 띄는지 먼저 봐주세요.

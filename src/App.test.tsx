@@ -465,7 +465,7 @@ beforeEach(() => {
   setViewportWidth(1024);
 });
 
-describe("downmark app", () => {
+describe("Downmark app", () => {
   it("renders a single-column workspace and keeps metadata in the toolbar row", async () => {
     renderApp({
       initialPaths: ["/notes/current.md"],
@@ -634,7 +634,7 @@ describe("downmark app", () => {
     await waitFor(() => {
       expect(dependencies.dialogs.messages).toContainEqual({
         body:
-          "The language preference was saved. Relaunch downmark to finish applying it.",
+          "The language preference was saved. Relaunch Downmark to finish applying it.",
         kind: "info",
         title: "Restart to apply language change",
       });

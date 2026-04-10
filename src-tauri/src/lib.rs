@@ -722,8 +722,8 @@ struct MenuStrings {
 fn menu_strings(locale: SupportedLocale) -> MenuStrings {
     match locale {
         SupportedLocale::Ko => MenuStrings {
-            about: "downmark 정보",
-            app_name: "downmark",
+            about: "Downmark 정보",
+            app_name: "Downmark",
             edit_menu: "편집",
             english: "English",
             file_menu: "파일",
@@ -741,8 +741,8 @@ fn menu_strings(locale: SupportedLocale) -> MenuStrings {
             window_menu: "윈도우",
         },
         SupportedLocale::Es => MenuStrings {
-            about: "Acerca de downmark",
-            app_name: "downmark",
+            about: "Acerca de Downmark",
+            app_name: "Downmark",
             edit_menu: "Editar",
             english: "English",
             file_menu: "Archivo",
@@ -760,8 +760,8 @@ fn menu_strings(locale: SupportedLocale) -> MenuStrings {
             window_menu: "Ventana",
         },
         SupportedLocale::En => MenuStrings {
-            about: "About downmark",
-            app_name: "downmark",
+            about: "About Downmark",
+            app_name: "Downmark",
             edit_menu: "Edit",
             english: "English",
             file_menu: "File",

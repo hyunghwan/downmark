@@ -1,0 +1,80 @@
+<svg
+  width="1024"
+  height="1024"
+  viewBox="0 0 1024 1024"
+  fill="none"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <defs>
+    <path
+      id="shell"
+      d="M512 96C649 96 729 96 789 126C845 154 890 199 918 255C948 315 948 395 948 532C948 669 948 749 918 809C890 865 845 910 789 938C729 968 649 968 512 968C375 968 295 968 235 938C179 910 134 865 106 809C76 749 76 669 76 532C76 395 76 315 106 255C134 199 179 154 235 126C295 96 375 96 512 96Z"
+    />
+    <path
+      id="motif"
+      d="M512 294L610 210C623 199 644 202 653 218L698 297C716 328 738 348 770 364C804 382 824 415 824 456C824 589 744 691 614 753C582 768 548 780 512 786C476 780 442 768 410 753C280 691 200 589 200 456C200 415 220 382 254 364C286 348 308 328 326 297L371 218C380 202 401 199 414 210L512 294Z"
+    />
+    <linearGradient id="shell-fill" x1="150" y1="122" x2="872" y2="934" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFDF9" />
+      <stop offset="1" stop-color="#F3EEE7" />
+    </linearGradient>
+    <linearGradient id="motif-fill" x1="276" y1="222" x2="716" y2="806" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFF3E7" />
+      <stop offset="0.58" stop-color="#EFB47C" />
+      <stop offset="1" stop-color="#CF7F46" />
+    </linearGradient>
+    <filter
+      id="shell-shadow"
+      x="44"
+      y="72"
+      width="936"
+      height="936"
+      filterUnits="userSpaceOnUse"
+      color-interpolation-filters="sRGB"
+    >
+      <feFlood flood-opacity="0" result="BackgroundImageFix" />
+      <feColorMatrix
+        in="SourceAlpha"
+        type="matrix"
+        values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0"
+        result="hardAlpha"
+      />
+      <feOffset dy="14" />
+      <feGaussianBlur stdDeviation="16" />
+      <feColorMatrix
+        type="matrix"
+        values="0 0 0 0 0.141176 0 0 0 0 0.113725 0 0 0 0 0.0901961 0 0 0 0.18 0"
+      />
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_0_1" />
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_0_1" result="shape" />
+    </filter>
+    <clipPath id="shell-clip">
+      <use href="#shell" />
+    </clipPath>
+    <clipPath id="motif-clip">
+      <use href="#motif" />
+    </clipPath>
+  </defs>
+
+  <g filter="url(#shell-shadow)">
+    <use href="#shell" fill="url(#shell-fill)" />
+    <g clip-path="url(#shell-clip)">
+      <ellipse cx="500" cy="164" rx="314" ry="104" fill="#FFFFFF" opacity="0.64" />
+      <ellipse cx="816" cy="846" rx="286" ry="220" fill="#C8BBAE" opacity="0.14" />
+    </g>
+    <use href="#shell" fill="none" stroke="#E7DED4" stroke-width="2" />
+  </g>
+
+  <g clip-path="url(#motif-clip)">
+    <rect x="180" y="190" width="664" height="620" fill="url(#motif-fill)" />
+    <ellipse cx="444" cy="302" rx="190" ry="92" fill="#FFFFFF" opacity="0.26" />
+    <ellipse cx="580" cy="730" rx="244" ry="148" fill="#B56B38" opacity="0.14" />
+    <path
+      d="M512 316L566 392C576 406 574 425 561 436L532 460C519 470 512 485 512 501V672C512 701 489 724 460 724C431 724 408 701 408 672C408 659 413 646 422 637L457 602C473 586 482 565 482 542V500C482 484 475 470 462 460L433 436C420 425 418 406 428 392L482 316H512Z"
+      fill="#FFF7EF"
+      fill-opacity="0.88"
+    />
+  </g>
+
+  <use href="#motif" fill="none" stroke="#D69463" stroke-opacity="0.42" stroke-width="3" />
+</svg>
