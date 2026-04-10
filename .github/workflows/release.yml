@@ -151,5 +151,5 @@ jobs:
           releaseDraft: false
           prerelease: false
           generateReleaseNotes: true
-          releaseAssetNamePattern: "[name]-[version]-[platform]-[arch][setup][ext]"
+          assetNamePattern: "[name]-[version]-[platform]-[arch][setup][ext]"
           args: ${{ format('{0} {1}', matrix.args, steps.windows_signing.outputs.extra_args) }}
