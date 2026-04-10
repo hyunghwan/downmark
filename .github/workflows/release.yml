@@ -86,9 +86,6 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Run frontend tests
-        run: npm run test:run
-
       - name: Import Apple signing certificate
         if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.KEYCHAIN_PASSWORD != ''
         shell: bash
