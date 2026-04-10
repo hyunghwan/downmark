@@ -206,9 +206,8 @@ button:disabled {
 }
 
 .document-heading {
-  display: grid;
-  align-content: center;
-  gap: 1px;
+  display: flex;
+  align-items: center;
   min-height: 100%;
 }
 
@@ -289,14 +288,6 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.document-label {
-  font-size: 10px;
-  line-height: 1;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
 }
 
 .toolbar-button {

@@ -1233,7 +1233,6 @@ function App({ dependencies }: AppProps) {
                 </div>
               ) : null}
               <div className="document-heading" data-tauri-drag-region>
-                <span className="document-label">Document</span>
                 <h1 className="document-title">{session.displayName}</h1>
               </div>
               <div className="app-titlebar-workspace-drag" data-tauri-drag-region />
