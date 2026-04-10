@@ -138,7 +138,7 @@ jobs:
           "extra_args=--config src-tauri/tauri.windows.conf.json" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build and upload release artifacts
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ env.APPLE_CERTIFICATE }}
