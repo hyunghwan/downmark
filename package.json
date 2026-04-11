@@ -1,7 +1,7 @@
 {
   "name": "downmark",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A tiny cross-platform markdown editor built with Tauri and React.",
   "type": "module",
   "scripts": {

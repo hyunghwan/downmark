@@ -5,6 +5,10 @@ import type { ReleaseNotesPayload, ReleaseNoteSection } from "./types";
 const releaseNotes = releaseNotesData as ReleaseNotesPayload;
 const releasesUrl = "https://github.com/hyunghwan/downmark/releases";
 const appUrl = "https://github.com/hyunghwan/downmark";
+const appleSiliconDownloadUrl =
+  "https://github.com/hyunghwan/downmark/releases/latest/download/Downmark-darwin-aarch64.dmg";
+const windowsDownloadUrl =
+  "https://github.com/hyunghwan/downmark/releases/latest/download/Downmark-windows-x64-setup.exe";
 
 type Route = "/" | "/releasenote" | "404";
 
@@ -154,14 +158,11 @@ function SectionHeading({ id, title }: { id: string; title: string }) {
 function DownloadButtons() {
   return (
     <div className="cta-row">
-      <a href={releasesUrl} className="cta-primary" target="_blank" rel="noreferrer">
-        Download for macOS
+      <a href={appleSiliconDownloadUrl} className="cta-primary" target="_blank" rel="noreferrer">
+        Download for Apple Silicon Mac
       </a>
-      <a href={releasesUrl} className="cta-secondary" target="_blank" rel="noreferrer">
+      <a href={windowsDownloadUrl} className="cta-secondary" target="_blank" rel="noreferrer">
         Download for Windows
-      </a>
-      <a href="/releasenote" className="cta-tertiary">
-        Release notes
       </a>
     </div>
   );
@@ -184,7 +185,8 @@ function HomePage() {
             <DownloadButtons />
           </div>
           <p className="hero-note">
-            Web preview resets on refresh.
+            Apple Silicon Mac and Windows installers always point to the latest release. Web
+            preview resets on refresh.
           </p>
         </div>
       </section>
@@ -198,11 +200,11 @@ function HomePage() {
           </div>
           <div>
             <h3>Which platforms are available?</h3>
-            <p>Downmark is available for macOS and Windows.</p>
+            <p>Downmark is currently available for Apple Silicon Mac and Windows.</p>
           </div>
           <div>
             <h3>Where can I download it?</h3>
-            <p>Desktop builds are published on GitHub Releases.</p>
+            <p>Use the Apple Silicon Mac or Windows download buttons above for the latest build.</p>
           </div>
           <div>
             <h3>Where can I see what's new?</h3>

@@ -1,15 +1,24 @@
 {
-  "generatedAt": "2026-04-10T22:59:39.783Z",
+  "generatedAt": "2026-04-11T06:21:48.508Z",
   "releaseUrl": "https://github.com/hyunghwan/downmark/releases",
   "repositoryUrl": "https://github.com/hyunghwan/downmark",
   "sections": [
     {
       "version": "Unreleased",
       "date": null,
+      "categories": []
+    },
+    {
+      "version": "v0.1.0",
+      "date": "2026-04-10",
       "categories": [
         {
           "title": "Added",
           "items": [
+            {
+              "hash": "507ac52",
+              "text": "Release workflow and refresh README"
+            },
             {
               "hash": "f23ef2c",
               "text": "Table editing controls and native titlebar support"
@@ -32,6 +41,22 @@
           "title": "Changed",
           "items": [
             {
+              "hash": "a3801b0",
+              "text": "Only enable signing when secrets exist"
+            },
+            {
+              "hash": "89c611e",
+              "text": "Use supported Tauri asset pattern input"
+            },
+            {
+              "hash": "7e44ca0",
+              "text": "Skip tests in release workflow"
+            },
+            {
+              "hash": "363ae77",
+              "text": "Capitalize Downmark branding across app and docs"
+            },
+            {
               "hash": "6d8d3f7",
               "text": "Tighten titlebar heading"
             },
@@ -44,6 +69,18 @@
         {
           "title": "Fixed",
           "items": [
+            {
+              "hash": "39079f3",
+              "text": "Signing checks in release workflow"
+            },
+            {
+              "hash": "05d5f57",
+              "text": "Tauri release action version"
+            },
+            {
+              "hash": "ee9513b",
+              "text": "Landing Vercel build inputs"
+            },
             {
               "hash": "9109fbb",
               "text": "Long document editor scrolling"
