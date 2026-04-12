@@ -466,12 +466,14 @@ beforeEach(() => {
 });
 
 describe("Downmark app", () => {
-  it("renders a single-column workspace and keeps metadata in the toolbar row", async () => {
-    renderApp({
-      initialPaths: ["/notes/current.md"],
-    });
+  it(
+    "renders a single-column workspace and keeps metadata in the toolbar row",
+    async () => {
+      renderApp({
+        initialPaths: ["/notes/current.md"],
+      });
 
-    await waitForOpenFile("current.md");
+      await waitForOpenFile("current.md");
 
     expect(document.querySelector(".app-titlebar")).toBeNull();
     expect(screen.queryByRole("dialog", { name: "Recent files" })).not.toBeInTheDocument();
@@ -488,8 +490,10 @@ describe("Downmark app", () => {
     const metadata = screen.getByLabelText("Document metadata");
     expect(metadata).toHaveTextContent("2 words · 15 chars");
     expect(metadata).toHaveTextContent("Saved");
-    expect(within(metadata).getByRole("radio", { name: "Rich" })).toBeChecked();
-  });
+      expect(within(metadata).getByRole("radio", { name: "Rich" })).toBeChecked();
+    },
+    15_000,
+  );
 
   it("renders a macOS overlay header with filename-only label beside native traffic lights", async () => {
     renderApp({

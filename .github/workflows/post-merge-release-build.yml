@@ -66,13 +66,11 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Require macOS signing and notarization secrets
+      - name: Announce skipped macOS packaging
         if: runner.os == 'macOS' && env.HAS_APPLE_RELEASE_SIGNING != 'true'
         shell: bash
         run: |
-          echo "Missing macOS release signing or notarization secrets." >&2
-          echo "Set APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, KEYCHAIN_PASSWORD, APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID before publishing macOS artifacts." >&2
-          exit 1
+          echo "Skipping macOS packaging because signing and notarization secrets are not configured."
 
       - name: Import Apple signing certificate
         if: runner.os == 'macOS' && env.HAS_APPLE_RELEASE_SIGNING == 'true'
@@ -139,12 +137,97 @@ jobs:
           "extra_args=--config src-tauri/tauri.windows.conf.json" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build release bundles
+        if: runner.os != 'macOS' || env.HAS_APPLE_RELEASE_SIGNING == 'true'
         run: npm run tauri -- build --bundles ${{ matrix.bundle_args }} ${{ matrix.tauri_args }} ${{ steps.windows_signing.outputs.extra_args }}
 
       - name: Upload release bundles
+        if: runner.os != 'macOS' || env.HAS_APPLE_RELEASE_SIGNING == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}-${{ github.sha }}
           path: ${{ matrix.artifact_paths }}
           if-no-files-found: error
           retention-days: 14
+
+  publish-main-build-release:
+    needs: build-release-bundles
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download built bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-artifacts
+          pattern: downmark-*-${{ github.sha }}
+
+      - name: Prepare public release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+
+          copy_optional() {
+            local pattern="$1"
+            local destination="$2"
+            local label="$3"
+            local matches=( $pattern )
+
+            if [ "${#matches[@]}" -eq 0 ]; then
+              echo "- ${label}: unavailable in this build" >> main-build-notes.md
+              return
+            fi
+
+            cp "${matches[0]}" "$destination"
+            echo "- ${label}: $(basename "$destination")" >> main-build-notes.md
+          }
+
+          mkdir -p public-release
+
+          cat > main-build-notes.md <<EOF
+          Latest successful build from \`main\`.
+
+          Commit: \`${GITHUB_SHA}\`
+          Generated: $(date -u +"%Y-%m-%d %H:%M:%SZ")
+
+          Assets:
+          EOF
+
+          copy_optional "downloaded-artifacts/downmark-macos-aarch64-dmg-${GITHUB_SHA}/**/*.dmg" \
+            "public-release/Downmark-darwin-aarch64.dmg" \
+            "Apple Silicon macOS"
+          copy_optional "downloaded-artifacts/downmark-macos-x86_64-dmg-${GITHUB_SHA}/**/*.dmg" \
+            "public-release/Downmark-darwin-x64.dmg" \
+            "Intel macOS"
+          copy_optional "downloaded-artifacts/downmark-windows-${GITHUB_SHA}/**/*setup.exe" \
+            "public-release/Downmark-windows-x64-setup.exe" \
+            "Windows installer (.exe)"
+          copy_optional "downloaded-artifacts/downmark-windows-${GITHUB_SHA}/**/*.msi" \
+            "public-release/Downmark-windows-x64.msi" \
+            "Windows installer (.msi)"
+
+          if ! compgen -G "public-release/*" >/dev/null; then
+            echo "No public release assets were produced." >&2
+            exit 1
+          fi
+
+          ls -lah public-release
+
+      - name: Publish rolling main-build release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if gh release view main-build >/dev/null 2>&1; then
+            gh release delete main-build --yes --cleanup-tag
+          fi
+
+          gh release create main-build \
+            --target "${GITHUB_SHA}" \
+            --title "Downmark main build" \
+            --notes-file main-build-notes.md \
+            --prerelease \
+            public-release/*

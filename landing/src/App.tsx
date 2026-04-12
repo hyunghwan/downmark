@@ -4,11 +4,11 @@ import type { ReleaseNotesPayload, ReleaseNoteSection } from "./types";
 
 const releaseNotes = releaseNotesData as ReleaseNotesPayload;
 const releasesUrl = "https://github.com/hyunghwan/downmark/releases";
+const mainBuildReleaseUrl = "https://github.com/hyunghwan/downmark/releases/tag/main-build";
 const appUrl = "https://github.com/hyunghwan/downmark";
-const appleSiliconDownloadUrl =
-  "https://github.com/hyunghwan/downmark/releases/latest/download/Downmark-darwin-aarch64.dmg";
+const appleSiliconDownloadUrl = mainBuildReleaseUrl;
 const windowsDownloadUrl =
-  "https://github.com/hyunghwan/downmark/releases/latest/download/Downmark-windows-x64-setup.exe";
+  "https://github.com/hyunghwan/downmark/releases/download/main-build/Downmark-windows-x64-setup.exe";
 
 type Route = "/" | "/releasenote" | "404";
 
@@ -185,8 +185,9 @@ function HomePage() {
             <DownloadButtons />
           </div>
           <p className="hero-note">
-            Apple Silicon Mac and Windows installers always point to the latest release. Web
-            preview resets on refresh.
+            Windows downloads start immediately. macOS builds are listed on the latest verified
+            main-build release page when notarized installers are available. Web preview resets on
+            refresh.
           </p>
         </div>
       </section>
@@ -204,7 +205,10 @@ function HomePage() {
           </div>
           <div>
             <h3>Where can I download it?</h3>
-            <p>Use the Apple Silicon Mac or Windows download buttons above for the latest build.</p>
+            <p>
+              Use the Windows button for the latest installer, or open the macOS main-build page to
+              download the newest notarized build when it is available.
+            </p>
           </div>
           <div>
             <h3>Where can I see what's new?</h3>
@@ -300,7 +304,10 @@ export default function App() {
             </p>
             <div className="page-footer-links">
               <a href={releasesUrl} target="_blank" rel="noreferrer">
-                Download
+                Releases
+              </a>
+              <a href={mainBuildReleaseUrl} target="_blank" rel="noreferrer">
+                Main build
               </a>
               <a href={appUrl} target="_blank" rel="noreferrer">
                 GitHub
