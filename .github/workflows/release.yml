@@ -11,7 +11,7 @@ jobs:
     permissions:
       contents: write
     env:
-      HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.KEYCHAIN_PASSWORD != '' }}
+      HAS_APPLE_RELEASE_SIGNING: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.KEYCHAIN_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
       HAS_WINDOWS_SIGNING: ${{ secrets.WINDOWS_CERTIFICATE != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' && vars.WINDOWS_CERTIFICATE_THUMBPRINT != '' && vars.WINDOWS_TIMESTAMP_URL != '' }}
 
     strategy:
@@ -76,8 +76,16 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Require macOS signing and notarization secrets
+        if: runner.os == 'macOS' && env.HAS_APPLE_RELEASE_SIGNING != 'true'
+        shell: bash
+        run: |
+          echo "Missing macOS release signing or notarization secrets." >&2
+          echo "Set APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, KEYCHAIN_PASSWORD, APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID before publishing a macOS release." >&2
+          exit 1
+
       - name: Import Apple signing certificate
-        if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING == 'true'
+        if: runner.os == 'macOS' && env.HAS_APPLE_RELEASE_SIGNING == 'true'
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -101,15 +109,9 @@ jobs:
             exit 1
           fi
           echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
-          if [ -n "${APPLE_ID:-}" ]; then
-            echo "APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
-          fi
-          if [ -n "${APPLE_PASSWORD:-}" ]; then
-            echo "APPLE_PASSWORD=$APPLE_PASSWORD" >> "$GITHUB_ENV"
-          fi
-          if [ -n "${APPLE_TEAM_ID:-}" ]; then
-            echo "APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
-          fi
+          echo "APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
+          echo "APPLE_PASSWORD=$APPLE_PASSWORD" >> "$GITHUB_ENV"
+          echo "APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
 
       - name: Import Windows signing certificate
         id: windows_signing
