@@ -11,7 +11,7 @@ import { Selection, TextSelection } from "@tiptap/pm/state";
 
 import type { SupportedLocale } from "../i18n/locale";
 import { BubbleMenuBar } from "./BubbleMenuBar";
-import { TableFloatingMenu } from "./TableFloatingMenu";
+import { TableEdgeControls } from "./TableEdgeControls";
 import {
   applyEditorCommand,
   applyLink,
@@ -346,13 +346,7 @@ const RichEditorAdapterInner = forwardRef<RichEditorAdapterHandle, RichEditorAda
             applyEditorCommand(editor, commandId);
           }}
         />
-        <TableFloatingMenu
-          editor={editor}
-          locale={locale}
-          onApplyCommand={(commandId) => {
-            applyEditorCommand(editor, commandId);
-          }}
-        />
+        <TableEdgeControls editor={editor} locale={locale} />
         <EditorContent
           editor={editor}
           onDrop={(event) => {

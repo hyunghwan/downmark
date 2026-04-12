@@ -100,7 +100,7 @@ describe("slash command helper", () => {
     expect(markdown).not.toContain("/table");
   });
 
-  it("adds table rows and columns from slash commands inside a table cell", () => {
+  it("adds and deletes table rows and columns from slash commands inside a table cell", () => {
     const editor = new Editor({
       extensions: createMarkdownExtensions(),
       content: "<p>/table</p>",
@@ -143,13 +143,37 @@ describe("slash command helper", () => {
       }),
     ).toBe(true);
 
+    const deleteRowCommandStart = editor.state.selection.from;
+    expect(editor.commands.insertContent("/delrow")).toBe(true);
+    const deleteRowCommandEnd = editor.state.selection.from;
+
+    expect(
+      applySlashCommand(editor, "table-delete-row", {
+        from: deleteRowCommandStart,
+        to: deleteRowCommandEnd,
+      }),
+    ).toBe(true);
+
+    const deleteColumnCommandStart = editor.state.selection.from;
+    expect(editor.commands.insertContent("/delcol")).toBe(true);
+    const deleteColumnCommandEnd = editor.state.selection.from;
+
+    expect(
+      applySlashCommand(editor, "table-delete-column", {
+        from: deleteColumnCommandStart,
+        to: deleteColumnCommandEnd,
+      }),
+    ).toBe(true);
+
     const table = editor.getJSON().content?.[0] as JSONContent | undefined;
     expect(table?.type).toBe("table");
-    expect(table?.content).toHaveLength(4);
-    expect(table?.content?.[0]?.content).toHaveLength(4);
+    expect(table?.content).toHaveLength(3);
+    expect(table?.content?.[0]?.content).toHaveLength(3);
 
     const markdown = gateway.fromRich(editor.getJSON());
     expect(markdown).not.toContain("/row");
     expect(markdown).not.toContain("/col");
+    expect(markdown).not.toContain("/delrow");
+    expect(markdown).not.toContain("/delcol");
   });
 });

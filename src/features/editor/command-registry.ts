@@ -155,6 +155,20 @@ const COMMAND_BEHAVIORS: CommandBehavior[] = [
     run: (editor) => editor.chain().focus().addColumnAfter().run(),
   },
   {
+    id: "table-delete-row",
+    surfaces: ["slash"],
+    isActive: () => false,
+    canRun: (editor) => editor.can().chain().focus().deleteRow().run(),
+    run: (editor) => editor.chain().focus().deleteRow().run(),
+  },
+  {
+    id: "table-delete-column",
+    surfaces: ["slash"],
+    isActive: () => false,
+    canRun: (editor) => editor.can().chain().focus().deleteColumn().run(),
+    run: (editor) => editor.chain().focus().deleteColumn().run(),
+  },
+  {
     id: "horizontal-rule",
     surfaces: ["slash"],
     isActive: () => false,

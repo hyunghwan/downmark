@@ -51,10 +51,12 @@ describe("command registry", () => {
     expect(applyEditorCommand(editor, "table")).toBe(true);
     expect(applyEditorCommand(editor, "table-add-row-after")).toBe(true);
     expect(applyEditorCommand(editor, "table-add-column-after")).toBe(true);
+    expect(applyEditorCommand(editor, "table-delete-row")).toBe(true);
+    expect(applyEditorCommand(editor, "table-delete-column")).toBe(true);
     const table = editor.getJSON().content?.[0] as JSONContent | undefined;
     expect(table?.type).toBe("table");
-    expect(table?.content).toHaveLength(4);
-    expect(table?.content?.[0]?.content).toHaveLength(4);
+    expect(table?.content).toHaveLength(3);
+    expect(table?.content?.[0]?.content).toHaveLength(3);
     serialized = gateway.fromRich(editor.getJSON());
     expect(serialized).toContain("|");
     expect(serialized).toContain("---");

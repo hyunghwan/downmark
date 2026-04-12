@@ -79,6 +79,8 @@ export interface LocaleMessages {
     slashEmpty: string;
     slashMenuAriaLabel: string;
     tableMenuAriaLabel: string;
+    tableColumnHandleLabel: (index: number) => string;
+    tableRowHandleLabel: (index: number) => string;
   };
   commands: Record<string, CommandMessages>;
 }
@@ -182,6 +184,8 @@ const EN_MESSAGES: LocaleMessages = {
     slashEmpty: "No matching command",
     slashMenuAriaLabel: "Slash commands",
     tableMenuAriaLabel: "Table actions",
+    tableColumnHandleLabel: (index) => `Select or move column ${index}`,
+    tableRowHandleLabel: (index) => `Select or move row ${index}`,
   },
   commands: {
     paragraph: {
@@ -274,6 +278,16 @@ const EN_MESSAGES: LocaleMessages = {
       description: "Insert a column to the right of the current table column.",
       keywords: ["table", "column", "right", "add"],
     },
+    "table-delete-row": {
+      label: "Delete Row",
+      description: "Remove the current table row.",
+      keywords: ["table", "row", "delete", "remove"],
+    },
+    "table-delete-column": {
+      label: "Delete Column",
+      description: "Remove the current table column.",
+      keywords: ["table", "column", "delete", "remove"],
+    },
     "horizontal-rule": {
       label: "Divider",
       description: "Insert a horizontal rule.",
@@ -362,6 +376,8 @@ const KO_MESSAGES: LocaleMessages = {
     slashEmpty: "일치하는 명령이 없습니다",
     slashMenuAriaLabel: "슬래시 명령",
     tableMenuAriaLabel: "표 작업",
+    tableColumnHandleLabel: (index) => `${index}번 열 선택 또는 이동`,
+    tableRowHandleLabel: (index) => `${index}번 행 선택 또는 이동`,
   },
   commands: {
     paragraph: {
@@ -453,6 +469,16 @@ const KO_MESSAGES: LocaleMessages = {
       label: "오른쪽 열 추가",
       description: "현재 표 열 오른쪽에 새 열을 삽입합니다.",
       keywords: ["테이블", "표", "열", "추가", "column", "table"],
+    },
+    "table-delete-row": {
+      label: "행 삭제",
+      description: "현재 표 행을 삭제합니다.",
+      keywords: ["테이블", "표", "행", "삭제", "remove", "delete"],
+    },
+    "table-delete-column": {
+      label: "열 삭제",
+      description: "현재 표 열을 삭제합니다.",
+      keywords: ["테이블", "표", "열", "삭제", "remove", "delete"],
     },
     "horizontal-rule": {
       label: "구분선",
@@ -546,6 +572,8 @@ const ES_MESSAGES: LocaleMessages = {
     slashEmpty: "No hay ningún comando coincidente",
     slashMenuAriaLabel: "Comandos con barra",
     tableMenuAriaLabel: "Acciones de tabla",
+    tableColumnHandleLabel: (index) => `Seleccionar o mover columna ${index}`,
+    tableRowHandleLabel: (index) => `Seleccionar o mover fila ${index}`,
   },
   commands: {
     paragraph: {
@@ -637,6 +665,16 @@ const ES_MESSAGES: LocaleMessages = {
       label: "Agregar columna a la derecha",
       description: "Inserta una columna a la derecha de la columna actual.",
       keywords: ["tabla", "columna", "derecha", "agregar", "column"],
+    },
+    "table-delete-row": {
+      label: "Eliminar fila",
+      description: "Quita la fila actual de la tabla.",
+      keywords: ["tabla", "fila", "eliminar", "quitar", "delete"],
+    },
+    "table-delete-column": {
+      label: "Eliminar columna",
+      description: "Quita la columna actual de la tabla.",
+      keywords: ["tabla", "columna", "eliminar", "quitar", "delete"],
     },
     "horizontal-rule": {
       label: "Separador",

@@ -1499,12 +1499,12 @@ function App({ dependencies }: AppProps) {
         return;
       }
 
-        const firstPath = paths[0];
-        if (firstPath) {
-          void openPath(firstPath, sessionRef.current.mode);
-        } else {
-          setFocusTarget("rich");
-        }
+      const firstPath = paths[0];
+      if (firstPath) {
+        void requestOpenPath(firstPath);
+      } else {
+        setFocusTarget("rich");
+      }
     })();
 
     return () => {

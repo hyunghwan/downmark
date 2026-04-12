@@ -1189,7 +1189,21 @@ describe("Downmark app", () => {
     expect(within(editor).getByText("2")).toBeInTheDocument();
   });
 
-  it("shows floating table actions and adds rows and columns from rich mode", async () => {
+  it("opens a secondary file-open request after initialization", async () => {
+    const dependencies = renderApp({
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    act(() => {
+      dependencies.shell.emit(["/notes/next.md"]);
+    });
+
+    await waitForOpenFile("next.md");
+  });
+
+  it("shows edge table controls and adds rows and columns from rich mode", async () => {
     const user = userEvent.setup();
     renderApp({
       files: [
@@ -1205,25 +1219,137 @@ describe("Downmark app", () => {
     await waitForOpenFile("current.md");
 
     const editor = await screen.findByRole("textbox", { name: "Rich text editor" });
-    await user.click(within(editor).getByText("Alpha"));
-
-    const toolbar = await screen.findByRole("toolbar", { name: "Table actions" });
+    const betaCell = within(editor).getByText("Beta").closest("td");
+    const valueCell = within(editor).getByText("2").closest("td");
     const getTable = () => within(editor).getByRole("table");
 
+    expect(betaCell).not.toBeNull();
+    expect(valueCell).not.toBeNull();
     expect(getTable().querySelectorAll("tr")).toHaveLength(3);
 
-    await user.click(within(toolbar).getByRole("button", { name: "Add Row Below" }));
+    fireEvent.pointerMove(betaCell!);
+    const addRowButton = await screen.findByRole("button", { name: "Add Row Below" });
+
+    fireEvent.pointerMove(addRowButton);
+    expect(screen.getByRole("button", { name: "Add Row Below" })).toBe(addRowButton);
+
+    fireEvent.pointerMove(editor, { clientX: 120, clientY: 120 });
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Add Row Below" })).toBeNull();
+    });
+
+    fireEvent.pointerMove(betaCell!);
+    await user.click(await screen.findByRole("button", { name: "Add Row Below" }));
 
     await waitFor(() => {
       expect(getTable().querySelectorAll("tr")).toHaveLength(4);
     });
+    expect(editor.querySelector(".selectedCell")).toBeNull();
 
-    await user.click(within(toolbar).getByRole("button", { name: "Add Column Right" }));
+    fireEvent.pointerMove(valueCell!);
+    await user.click(await screen.findByRole("button", { name: "Add Column Right" }));
 
     await waitFor(() => {
       const firstRow = getTable().querySelector("tr");
       expect(firstRow?.querySelectorAll("th, td")).toHaveLength(3);
     });
+    expect(editor.querySelector(".selectedCell")).toBeNull();
+  });
+
+  it("reorders table rows and columns from edge handles", async () => {
+    renderApp({
+      files: [
+        {
+          path: "/notes/current.md",
+          markdown:
+            "| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n| Beta | 2 |",
+        },
+      ],
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    const editor = await screen.findByRole("textbox", { name: "Rich text editor" });
+    const alphaCell = within(editor).getByText("Alpha").closest("td");
+    const betaCell = within(editor).getByText("Beta").closest("td");
+    const nameHeader = within(editor).getByText("Name").closest("th");
+    const valueHeader = within(editor).getByText("Value").closest("th");
+
+    expect(alphaCell).not.toBeNull();
+    expect(betaCell).not.toBeNull();
+    expect(nameHeader).not.toBeNull();
+    expect(valueHeader).not.toBeNull();
+
+    fireEvent.pointerMove(alphaCell!);
+    const rowHandle = await screen.findByRole("button", {
+      name: "Select or move row 2",
+    });
+    fireEvent.pointerDown(rowHandle);
+    fireEvent.pointerMove(betaCell!, { buttons: 1 });
+    fireEvent.pointerUp(window);
+
+    fireEvent.pointerMove(nameHeader!);
+    const columnHandle = await screen.findByRole("button", {
+      name: "Select or move column 1",
+    });
+    fireEvent.pointerDown(columnHandle);
+    fireEvent.pointerMove(valueHeader!, { buttons: 1 });
+    fireEvent.pointerUp(window);
+
+    fireEvent.click(screen.getByRole("radio", { name: "Raw" }));
+    const textarea = (await screen.findByRole("textbox", {
+      name: "Raw markdown editor",
+    })) as HTMLTextAreaElement;
+
+    await waitFor(() => {
+      const lines = textarea.value.trim().split("\n");
+
+      expect(lines[0]).toMatch(/^\| Value\s+\| Name\s+\|$/);
+      expect(lines[1]).toMatch(/^\| -+\s+\| -+\s+\|$/);
+      expect(lines[2]).toMatch(/^\| 2\s+\| Beta\s+\|$/);
+      expect(lines[3]).toMatch(/^\| 1\s+\| Alpha\s+\|$/);
+    });
+  });
+
+  it("hides the text bubble menu for table row and column selections", async () => {
+    renderApp({
+      files: [
+        {
+          path: "/notes/current.md",
+          markdown:
+            "| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n| Beta | 2 |",
+        },
+      ],
+      initialPaths: ["/notes/current.md"],
+    });
+
+    await waitForOpenFile("current.md");
+
+    const editor = await screen.findByRole("textbox", { name: "Rich text editor" });
+    const alphaCell = within(editor).getByText("Alpha").closest("td");
+    const nameHeader = within(editor).getByText("Name").closest("th");
+
+    expect(alphaCell).not.toBeNull();
+    expect(nameHeader).not.toBeNull();
+
+    fireEvent.pointerMove(alphaCell!);
+    const rowHandle = await screen.findByRole("button", {
+      name: "Select or move row 2",
+    });
+    fireEvent.pointerDown(rowHandle);
+    fireEvent.pointerUp(window);
+
+    expect(screen.queryByRole("button", { name: "Bold" })).toBeNull();
+
+    fireEvent.pointerMove(nameHeader!);
+    const columnHandle = await screen.findByRole("button", {
+      name: "Select or move column 1",
+    });
+    fireEvent.pointerDown(columnHandle);
+    fireEvent.pointerUp(window);
+
+    expect(screen.queryByRole("button", { name: "Bold" })).toBeNull();
   });
 
   it("renders saved local markdown images with a resolved file URL in rich mode", async () => {
