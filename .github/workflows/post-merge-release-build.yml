@@ -1,15 +1,18 @@
-name: Release
+name: Post-Merge Release Build
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: ["main"]
   workflow_dispatch:
 
+concurrency:
+  group: post-merge-release-build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  publish-tauri:
+  build-release-bundles:
     permissions:
-      contents: write
+      contents: read
     env:
       HAS_APPLE_RELEASE_SIGNING: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.KEYCHAIN_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
       HAS_WINDOWS_SIGNING: ${{ secrets.WINDOWS_CERTIFICATE != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' && vars.WINDOWS_CERTIFICATE_THUMBPRINT != '' && vars.WINDOWS_TIMESTAMP_URL != '' }}
@@ -19,11 +22,24 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
-            args: --target aarch64-apple-darwin
+            artifact_name: downmark-macos-aarch64-dmg
+            tauri_args: --target aarch64-apple-darwin
+            bundle_args: dmg
+            artifact_paths: |
+              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           - platform: macos-latest
-            args: --target x86_64-apple-darwin
+            artifact_name: downmark-macos-x86_64-dmg
+            tauri_args: --target x86_64-apple-darwin
+            bundle_args: dmg
+            artifact_paths: |
+              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           - platform: windows-latest
-            args: ""
+            artifact_name: downmark-windows
+            tauri_args:
+            bundle_args: nsis,msi
+            artifact_paths: |
+              src-tauri/target/release/bundle/**/*.exe
+              src-tauri/target/release/bundle/**/*.msi
 
     runs-on: ${{ matrix.platform }}
 
@@ -47,32 +63,6 @@ jobs:
         with:
           workspaces: ./src-tauri -> target
 
-      - name: Verify release version matches the tag
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: bash
-        run: |
-          node --input-type=module <<'EOF'
-          import fs from "node:fs";
-
-          const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
-          const tauriVersion = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
-          const cargoToml = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
-          const cargoVersion = cargoToml.match(/^version = "(.+)"$/m)?.[1];
-          const tagVersion = process.env.GITHUB_REF_NAME.replace(/^v/, "");
-
-          const versions = {
-            tagVersion,
-            packageVersion,
-            tauriVersion,
-            cargoVersion,
-          };
-
-          if (new Set(Object.values(versions)).size !== 1) {
-            console.error("Release version mismatch:", versions);
-            process.exit(1);
-          }
-          EOF
-
       - name: Install npm dependencies
         run: npm ci
 
@@ -81,7 +71,7 @@ jobs:
         shell: bash
         run: |
           echo "Missing macOS release signing or notarization secrets." >&2
-          echo "Set APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, KEYCHAIN_PASSWORD, APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID before publishing a macOS release." >&2
+          echo "Set APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, KEYCHAIN_PASSWORD, APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID before publishing macOS artifacts." >&2
           exit 1
 
       - name: Import Apple signing certificate
@@ -148,16 +138,13 @@ jobs:
           Set-Content -Path $configPath -Value $config -Encoding utf8
           "extra_args=--config src-tauri/tauri.windows.conf.json" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Build and upload release artifacts
-        uses: tauri-apps/tauri-action@v0.6.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build release bundles
+        run: npm run tauri -- build --bundles ${{ matrix.bundle_args }} ${{ matrix.tauri_args }} ${{ steps.windows_signing.outputs.extra_args }}
+
+      - name: Upload release bundles
+        uses: actions/upload-artifact@v4
         with:
-          tagName: v__VERSION__
-          releaseName: Downmark v__VERSION__
-          releaseBody: See the assets below to download the macOS and Windows builds.
-          releaseDraft: false
-          prerelease: false
-          generateReleaseNotes: true
-          assetNamePattern: "[name]-[platform]-[arch][setup][ext]"
-          args: ${{ format('{0} {1}', matrix.args, steps.windows_signing.outputs.extra_args) }}
+          name: ${{ matrix.artifact_name }}-${{ github.sha }}
+          path: ${{ matrix.artifact_paths }}
+          if-no-files-found: error
+          retention-days: 14

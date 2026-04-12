@@ -1,5 +1,6 @@
 import type { Editor } from "@tiptap/core";
 import { BubbleMenu } from "@tiptap/react/menus";
+import { CellSelection } from "@tiptap/pm/tables";
 
 import { getLocaleMessages } from "../i18n/messages";
 import type { SupportedLocale } from "../i18n/locale";
@@ -21,9 +22,21 @@ export function BubbleMenuBar({ editor, locale, onApplyCommand }: BubbleMenuBarP
       editor={editor}
       className="bubble-menu"
       options={{ placement: "top" }}
-      shouldShow={({ editor: currentEditor }: { editor: Editor }) =>
-        !currentEditor.state.selection.empty
-      }
+      shouldShow={({ editor: currentEditor }: { editor: Editor }) => {
+        const { selection } = currentEditor.state;
+        if (selection.empty) {
+          return false;
+        }
+
+        if (
+          selection instanceof CellSelection &&
+          (selection.isRowSelection() || selection.isColSelection())
+        ) {
+          return false;
+        }
+
+        return true;
+      }}
     >
       {bubbleCommands.map((command) => (
         <button

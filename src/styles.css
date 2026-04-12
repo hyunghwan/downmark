@@ -523,18 +523,6 @@ body:-webkit-window-inactive .workspace-header.is-custom-titlebar .mode-toggle {
   position: relative;
 }
 
-.table-floating-menu-anchor {
-  position: sticky;
-  top: 12px;
-  z-index: 4;
-  display: flex;
-  justify-content: flex-end;
-  width: min(100%, var(--content-max-width));
-  height: 0;
-  margin: 0 auto;
-  pointer-events: none;
-}
-
 .raw-textarea,
 .rich-editor .tiptap {
   display: block;
@@ -674,19 +662,28 @@ body:-webkit-window-inactive .workspace-header.is-custom-titlebar .mode-toggle {
   width: 100%;
   min-width: 22rem;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .tiptap th,
 .tiptap td {
+  position: relative;
   border: 1px solid var(--line);
   padding: 0.55rem 0.7rem;
-  vertical-align: top;
+  height: 2.9rem;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
 }
 
 .tiptap th {
   background: rgba(255, 255, 255, 0.05);
   text-align: left;
   font-weight: 700;
+}
+
+.tiptap th > p,
+.tiptap td > p {
+  margin: 0;
 }
 
 .tiptap hr {
@@ -717,7 +714,6 @@ body:-webkit-window-inactive .workspace-header.is-custom-titlebar .mode-toggle {
 }
 
 .bubble-menu,
-.table-floating-menu,
 .slash-menu {
   border: 1px solid var(--line-strong);
   border-radius: 10px;
@@ -725,15 +721,13 @@ body:-webkit-window-inactive .workspace-header.is-custom-titlebar .mode-toggle {
   box-shadow: var(--menu-shadow);
 }
 
-.bubble-menu,
-.table-floating-menu {
+.bubble-menu {
   display: inline-flex;
   gap: 2px;
   padding: 3px;
 }
 
-.bubble-menu button,
-.table-floating-menu button {
+.bubble-menu button {
   padding: 5px 7px;
   border: none;
   border-radius: 7px;
@@ -743,16 +737,97 @@ body:-webkit-window-inactive .workspace-header.is-custom-titlebar .mode-toggle {
 }
 
 .bubble-menu button.is-active,
-.bubble-menu button:hover,
-.table-floating-menu button:hover {
+.bubble-menu button:hover {
   background: var(--surface-hover);
 }
 
-.table-floating-menu {
-  gap: 4px;
-  padding: 4px;
-  margin-top: 12px;
+.tiptap .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent-soft);
+  pointer-events: none;
+}
+
+.table-edge-controls {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.table-edge-control {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  background: color-mix(in srgb, var(--surface) 96%, var(--text) 4%);
+  color: color-mix(in srgb, var(--text) 62%, var(--muted) 38%);
+  box-shadow: var(--menu-shadow);
   pointer-events: auto;
+  transform: translate(-50%, -50%);
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.table-edge-control:hover {
+  border-color: color-mix(in srgb, var(--text) 18%, transparent);
+  background: color-mix(in srgb, var(--surface-hover) 70%, var(--surface) 30%);
+  color: var(--text);
+}
+
+.table-edge-handle {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 8px;
+  touch-action: none;
+  cursor: grab;
+}
+
+.table-edge-handle.is-dragging {
+  border-color: color-mix(in srgb, var(--text) 16%, transparent);
+  background: color-mix(in srgb, var(--surface-hover) 88%, var(--surface) 12%);
+  color: var(--text);
+  cursor: grabbing;
+}
+
+.table-edge-add-button {
+  padding: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-hover) 42%, var(--surface) 58%);
+  color: var(--text);
+}
+
+.table-edge-add-row {
+  max-width: calc(100% - 32px);
+}
+
+.table-edge-add-column {
+  max-height: calc(100% - 32px);
+}
+
+.table-edge-grip-icon {
+  display: block;
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+.table-edge-grip-icon.is-column {
+  transform: rotate(90deg);
+}
+
+.table-edge-plus-icon {
+  display: block;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1;
+  transform: translateY(-1px);
 }
 
 .slash-menu {

@@ -60,6 +60,10 @@ export function applySlashCommand(
       return chain.addRowAfter().run();
     case "table-add-column-after":
       return chain.addColumnAfter().run();
+    case "table-delete-row":
+      return chain.deleteRow().run();
+    case "table-delete-column":
+      return chain.deleteColumn().run();
     case "horizontal-rule":
       return chain.setHorizontalRule().run();
     default:

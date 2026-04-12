@@ -14,7 +14,7 @@ use tauri::{
         CheckMenuItem, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder,
         MenuItemKind, PredefinedMenuItem, Submenu, SubmenuBuilder,
     },
-    AppHandle, Emitter, Manager, Runtime, State,
+    AppHandle, Emitter, Manager, Runtime, State, Url,
 };
 
 const OPEN_REQUEST_EVENT: &str = "downmark://open-paths";
@@ -32,7 +32,12 @@ const MENU_LANGUAGE_EN_ID: &str = "view.language.en";
 const MENU_LANGUAGE_KO_ID: &str = "view.language.ko";
 const MENU_LANGUAGE_ES_ID: &str = "view.language.es";
 
-struct LaunchPaths(Mutex<Vec<String>>);
+struct OpenRequests(Mutex<OpenRequestState>);
+
+struct OpenRequestState {
+    frontend_ready: bool,
+    pending_paths: Vec<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -174,8 +179,10 @@ fn clamp_document_zoom_percent(value: u16) -> u16 {
 }
 
 #[tauri::command]
-fn get_initial_open_paths(state: State<'_, LaunchPaths>) -> Vec<String> {
-    state.0.lock().expect("launch paths lock poisoned").clone()
+fn get_initial_open_paths(state: State<'_, OpenRequests>) -> Vec<String> {
+    let mut open_requests = state.0.lock().expect("open requests lock poisoned");
+    open_requests.frontend_ready = true;
+    std::mem::take(&mut open_requests.pending_paths)
 }
 
 #[tauri::command]
@@ -475,7 +482,7 @@ pub fn run() {
     let launch_paths = collect_path_args(std::env::args_os().skip(1));
     let startup_settings = default_app_settings();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .enable_macos_default_menu(false)
         .menu(move |app| build_app_menu_with_settings(app, &startup_settings))
         .on_menu_event(|app, event| {
@@ -496,12 +503,13 @@ pub fn run() {
                 let _ = window.set_focus();
             }
 
-            if !paths.is_empty() {
-                let _ = app.emit(OPEN_REQUEST_EVENT, OpenPathsPayload { paths });
-            }
+            dispatch_open_paths(&app, paths);
         }))
         .plugin(tauri_plugin_dialog::init())
-        .manage(LaunchPaths(Mutex::new(launch_paths)))
+        .manage(OpenRequests(Mutex::new(OpenRequestState {
+            frontend_ready: false,
+            pending_paths: launch_paths,
+        })))
         .invoke_handler(tauri::generate_handler![
             check_file_status,
             get_initial_open_paths,
@@ -515,8 +523,15 @@ pub fn run() {
             set_document_zoom_percent,
             set_language_preference
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = event {
+            dispatch_open_paths(app_handle, collect_paths_from_urls(urls));
+        }
+    });
 }
 
 fn build_app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -794,20 +809,97 @@ where
                 return None;
             }
 
-            let path = PathBuf::from(raw.as_ref());
-            let looks_like_markdown = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .map(|extension| matches!(extension, "md" | "markdown" | "mdown"))
-                .unwrap_or(false);
-
-            if path.exists() || looks_like_markdown {
-                Some(path.to_string_lossy().into_owned())
-            } else {
-                None
-            }
+            normalize_open_arg(raw.as_ref())
         })
         .collect()
+}
+
+fn collect_paths_from_urls<I>(urls: I) -> Vec<String>
+where
+    I: IntoIterator<Item = Url>,
+{
+    urls.into_iter()
+        .filter_map(|url| {
+            if url.scheme() != "file" {
+                return None;
+            }
+
+            normalize_open_path(url.to_file_path().ok()?)
+        })
+        .collect()
+}
+
+fn normalize_open_path(path: PathBuf) -> Option<String> {
+    if !is_supported_markdown_path(&path) {
+        return None;
+    }
+
+    Some(path.to_string_lossy().into_owned())
+}
+
+fn normalize_open_arg(raw: &str) -> Option<String> {
+    if let Ok(url) = Url::parse(raw) {
+        if url.scheme() != "file" {
+            return None;
+        }
+
+        return normalize_open_path(url.to_file_path().ok()?);
+    }
+
+    normalize_open_path(PathBuf::from(raw))
+}
+
+fn is_supported_markdown_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            extension.eq_ignore_ascii_case("md")
+                || extension.eq_ignore_ascii_case("markdown")
+                || extension.eq_ignore_ascii_case("mdown")
+        })
+        .unwrap_or(false)
+}
+
+fn merge_unique_paths(existing_paths: &mut Vec<String>, next_paths: Vec<String>) {
+    for path in next_paths {
+        if !existing_paths.iter().any(|candidate| candidate == &path) {
+            existing_paths.push(path);
+        }
+    }
+}
+
+fn emit_open_paths<R: Runtime>(app: &AppHandle<R>, paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+
+    let payload = OpenPathsPayload { paths };
+
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit(OPEN_REQUEST_EVENT, payload);
+    } else {
+        let _ = app.emit(OPEN_REQUEST_EVENT, payload);
+    }
+}
+
+fn dispatch_open_paths<R: Runtime>(app: &AppHandle<R>, paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+
+    let open_requests_state = app.state::<OpenRequests>();
+    let mut open_requests = open_requests_state
+        .0
+        .lock()
+        .expect("open requests lock poisoned");
+
+    if open_requests.frontend_ready {
+        drop(open_requests);
+        emit_open_paths(app, paths);
+        return;
+    }
+
+    merge_unique_paths(&mut open_requests.pending_paths, paths);
 }
 
 fn read_settings<R: Runtime>(app: &AppHandle<R>) -> Result<AppSettings, String> {
@@ -1078,12 +1170,14 @@ fn replace_existing_file(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalize_markdown, default_app_settings, detect_newline_style, hydrate_settings,
-        normalize_newlines, prepare_image_asset, resolve_supported_locale, AppSettings,
-        LanguagePreference, PrepareImageAssetRequest, PreparedImageAsset, RecentFile,
-        StoredAppSettings, SupportedLocale,
+        canonicalize_markdown, collect_path_args, collect_paths_from_urls, default_app_settings,
+        detect_newline_style, hydrate_settings, merge_unique_paths, normalize_newlines,
+        prepare_image_asset, resolve_supported_locale, AppSettings, LanguagePreference,
+        PrepareImageAssetRequest, PreparedImageAsset, RecentFile, StoredAppSettings,
+        SupportedLocale,
     };
-    use std::{fs, path::PathBuf};
+    use std::{ffi::OsString, fs, path::PathBuf};
+    use tauri::Url;
 
     #[test]
     fn canonicalize_markdown_replaces_crlf() {
@@ -1232,6 +1326,77 @@ mod tests {
         );
 
         fs::remove_dir_all(directory).expect("cleans up temp directory");
+    }
+
+    #[test]
+    fn collect_path_args_keeps_supported_markdown_files() {
+        let paths = collect_path_args([
+            OsString::from("Downmark"),
+            OsString::from("/notes/current.md"),
+            OsString::from("/notes/ignore.txt"),
+            OsString::from("/notes/Guide.MARKDOWN"),
+        ]);
+
+        assert_eq!(
+            paths,
+            vec![
+                "/notes/current.md".to_string(),
+                "/notes/Guide.MARKDOWN".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_path_args_accepts_file_url_arguments() {
+        let file_url = Url::from_file_path("/Users/byun/notes/current.md")
+            .expect("builds file url")
+            .to_string();
+
+        assert_eq!(
+            collect_path_args([OsString::from(file_url)]),
+            vec!["/Users/byun/notes/current.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn collect_paths_from_urls_accepts_supported_file_urls_only() {
+        let urls = vec![
+            Url::parse("file:///Users/byun/notes/current.md").expect("parses markdown url"),
+            Url::parse("file:///Users/byun/notes/ignore.txt").expect("parses text url"),
+            Url::parse("https://example.com/remote.md").expect("parses https url"),
+            Url::parse("file:///Users/byun/notes/Guide.MDOWN").expect("parses uppercase url"),
+        ];
+
+        assert_eq!(
+            collect_paths_from_urls(urls),
+            vec![
+                "/Users/byun/notes/current.md".to_string(),
+                "/Users/byun/notes/Guide.MDOWN".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_unique_paths_appends_new_open_requests_once() {
+        let mut pending_paths = vec!["/notes/current.md".to_string()];
+
+        merge_unique_paths(
+            &mut pending_paths,
+            vec![
+                "/notes/current.md".to_string(),
+                "/notes/second.md".to_string(),
+                "/notes/third.markdown".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            pending_paths,
+            vec![
+                "/notes/current.md".to_string(),
+                "/notes/second.md".to_string(),
+                "/notes/third.markdown".to_string(),
+            ]
+        );
     }
 
     fn create_test_directory(label: &str) -> PathBuf {
