@@ -148,3 +148,72 @@ jobs:
           path: ${{ matrix.artifact_paths }}
           if-no-files-found: error
           retention-days: 14
+
+  publish-main-build-release:
+    needs: build-release-bundles
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download built bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-artifacts
+          pattern: downmark-*-${{ github.sha }}
+
+      - name: Prepare public release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+
+          copy_first() {
+            local pattern="$1"
+            local destination="$2"
+            local matches=( $pattern )
+            if [ "${#matches[@]}" -eq 0 ]; then
+              echo "No files matched pattern: $pattern" >&2
+              exit 1
+            fi
+
+            cp "${matches[0]}" "$destination"
+          }
+
+          mkdir -p public-release
+
+          copy_first "downloaded-artifacts/downmark-macos-aarch64-dmg-${GITHUB_SHA}/**/*.dmg" \
+            "public-release/Downmark-darwin-aarch64.dmg"
+          copy_first "downloaded-artifacts/downmark-macos-x86_64-dmg-${GITHUB_SHA}/**/*.dmg" \
+            "public-release/Downmark-darwin-x64.dmg"
+          copy_first "downloaded-artifacts/downmark-windows-${GITHUB_SHA}/**/*setup.exe" \
+            "public-release/Downmark-windows-x64-setup.exe"
+          copy_first "downloaded-artifacts/downmark-windows-${GITHUB_SHA}/**/*.msi" \
+            "public-release/Downmark-windows-x64.msi"
+
+          ls -lah public-release
+
+      - name: Publish rolling main-build release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          cat > main-build-notes.md <<EOF
+          Latest successful build from \`main\`.
+
+          Commit: \`${GITHUB_SHA}\`
+          Generated: $(date -u +"%Y-%m-%d %H:%M:%SZ")
+          EOF
+
+          if gh release view main-build >/dev/null 2>&1; then
+            gh release delete main-build --yes --cleanup-tag
+          fi
+
+          gh release create main-build \
+            --target "${GITHUB_SHA}" \
+            --title "Downmark main build" \
+            --notes-file main-build-notes.md \
+            --prerelease \
+            public-release/*

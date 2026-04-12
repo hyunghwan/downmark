@@ -82,7 +82,7 @@ GitHub Releases can publish downloadable Windows and macOS bundles directly from
 
 - In the repository settings, make sure `Actions > General > Workflow permissions` is set to `Read and write permissions` so the workflow can create releases and upload assets.
 - The workflow is triggered by pushing a version tag like `v0.1.0`, or by running `Release` manually from the Actions tab.
-- A normal branch push does not create a GitHub Release right now.
+- Pushes to `main` also run `Post-Merge Release Build`, which creates a rolling prerelease tag named `main-build` and uploads the latest verified installers there.
 
 ### Release flow
 
@@ -98,11 +98,13 @@ git push origin v0.1.0
 4. Wait for the `Release` GitHub Actions workflow to finish.
 5. Open the GitHub Release page and download the generated `.dmg`, `.app`, `.exe`, or `.msi` assets.
 
+If you only need the newest merged build for testing, use the `main-build` prerelease instead of waiting for a version tag. The landing page download buttons point to that rolling prerelease.
+
 The workflow validates that the Git tag and all app version files match before publishing. If you prefer reviewing a draft release before it becomes public, change `releaseDraft: false` to `releaseDraft: true` in `.github/workflows/release.yml`.
 
 ### Optional signing and notarization
 
-If the signing secrets below are configured, the same release workflow will sign the installers automatically. If they are missing, the workflow still builds release assets, but they will be unsigned.
+If the signing secrets below are configured, the macOS release workflows will sign and notarize the installers automatically. If they are missing, macOS release publishing now fails instead of uploading broken installers.
 
 macOS GitHub Actions secrets:
 

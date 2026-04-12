@@ -4,11 +4,12 @@ import type { ReleaseNotesPayload, ReleaseNoteSection } from "./types";
 
 const releaseNotes = releaseNotesData as ReleaseNotesPayload;
 const releasesUrl = "https://github.com/hyunghwan/downmark/releases";
+const mainBuildReleaseUrl = "https://github.com/hyunghwan/downmark/releases/tag/main-build";
 const appUrl = "https://github.com/hyunghwan/downmark";
 const appleSiliconDownloadUrl =
-  "https://github.com/hyunghwan/downmark/releases/latest/download/Downmark-darwin-aarch64.dmg";
+  "https://github.com/hyunghwan/downmark/releases/download/main-build/Downmark-darwin-aarch64.dmg";
 const windowsDownloadUrl =
-  "https://github.com/hyunghwan/downmark/releases/latest/download/Downmark-windows-x64-setup.exe";
+  "https://github.com/hyunghwan/downmark/releases/download/main-build/Downmark-windows-x64-setup.exe";
 
 type Route = "/" | "/releasenote" | "404";
 
@@ -185,7 +186,7 @@ function HomePage() {
             <DownloadButtons />
           </div>
           <p className="hero-note">
-            Apple Silicon Mac and Windows installers always point to the latest release. Web
+            Apple Silicon Mac and Windows installers point to the latest verified main build. Web
             preview resets on refresh.
           </p>
         </div>
@@ -204,7 +205,7 @@ function HomePage() {
           </div>
           <div>
             <h3>Where can I download it?</h3>
-            <p>Use the Apple Silicon Mac or Windows download buttons above for the latest build.</p>
+            <p>Use the Apple Silicon Mac or Windows download buttons above for the latest main build.</p>
           </div>
           <div>
             <h3>Where can I see what's new?</h3>
@@ -300,7 +301,10 @@ export default function App() {
             </p>
             <div className="page-footer-links">
               <a href={releasesUrl} target="_blank" rel="noreferrer">
-                Download
+                Releases
+              </a>
+              <a href={mainBuildReleaseUrl} target="_blank" rel="noreferrer">
+                Main build
               </a>
               <a href={appUrl} target="_blank" rel="noreferrer">
                 GitHub
