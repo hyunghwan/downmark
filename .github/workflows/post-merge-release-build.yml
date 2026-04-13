@@ -139,6 +139,23 @@ jobs:
       - name: Build release bundles
         run: npm run tauri -- build --bundles ${{ matrix.bundle_args }} ${{ matrix.tauri_args }} ${{ steps.windows_signing.outputs.extra_args }}
 
+      - name: Repack unsigned macOS DMG
+        if: runner.os == 'macOS' && env.HAS_APPLE_RELEASE_SIGNING != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          dmgs=(src-tauri/target/*/release/bundle/dmg/*.dmg)
+          if [ "${#dmgs[@]}" -eq 0 ]; then
+            echo "Expected at least one macOS DMG to repack." >&2
+            exit 1
+          fi
+
+          for dmg in "${dmgs[@]}"; do
+            bash ./scripts/repack-unsigned-macos-dmg.sh "$dmg"
+          done
+
       - name: Upload release bundles
         uses: actions/upload-artifact@v4
         with:
@@ -191,7 +208,7 @@ jobs:
 
           macOS packaging:
           - If Apple signing secrets are configured, macOS assets are notarized DMGs.
-          - Otherwise, macOS assets are unsigned DMGs and may require bypassing Gatekeeper locally.
+          - Otherwise, macOS assets are unsigned DMGs containing an ad-hoc signed app and may require bypassing Gatekeeper locally.
 
           Opening unsigned macOS builds:
           1. Open the DMG and drag Downmark into Applications.
