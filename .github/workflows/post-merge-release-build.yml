@@ -9,6 +9,9 @@ concurrency:
   group: post-merge-release-build-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-release-bundles:
     permissions:
@@ -171,6 +174,14 @@ jobs:
       contents: write
 
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Download built bundles
         uses: actions/download-artifact@v4
         with:
