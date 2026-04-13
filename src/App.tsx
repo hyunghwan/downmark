@@ -1523,7 +1523,7 @@ function App({ dependencies }: AppProps) {
       unlistenOpenPaths?.();
       unlistenMenu?.();
     };
-  }, [handleOpenPathRequest, openPath, runMenuAction, shell]);
+  }, [shell]);
 
   const handleGlobalKeyDown = useEffectEvent((event: KeyboardEvent) => {
     if (event.defaultPrevented || event.altKey) {

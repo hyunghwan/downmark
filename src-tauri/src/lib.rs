@@ -6,7 +6,7 @@ use std::{
     fs::{self, File},
     io::Write,
     path::{Component, Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use sys_locale::get_locale;
@@ -20,6 +20,17 @@ use tauri::{
     WebviewWindowBuilder, Window,
 };
 use tauri_plugin_dialog::DialogExt;
+
+#[cfg(target_os = "macos")]
+use objc2::{
+    ffi::{class_addMethod, class_respondsToSelector},
+    runtime::{AnyClass, AnyObject, Imp, Sel},
+    sel, MainThreadMarker,
+};
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSApp, NSApplication, NSApplicationDelegateReply};
+#[cfg(target_os = "macos")]
+use objc2_foundation::{NSArray, NSString};
 
 const MENU_ACTION_EVENT: &str = "downmark://menu-action";
 const OPEN_PATHS_EVENT: &str = "downmark://open-paths";
@@ -36,6 +47,13 @@ const MENU_LANGUAGE_SYSTEM_ID: &str = "view.language.system";
 const MENU_LANGUAGE_EN_ID: &str = "view.language.en";
 const MENU_LANGUAGE_KO_ID: &str = "view.language.ko";
 const MENU_LANGUAGE_ES_ID: &str = "view.language.es";
+
+#[cfg(target_os = "macos")]
+static MACOS_OPEN_FILES_APP_HANDLE: OnceLock<AppHandle<tauri::Wry>> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static MACOS_PENDING_OPEN_FILES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static MACOS_OPEN_FILES_HANDLER_INSTALLED: OnceLock<()> = OnceLock::new();
 
 struct WindowRegistry(Mutex<WindowRegistryState>);
 
@@ -576,6 +594,23 @@ fn emit_open_paths_to_window<R: Runtime>(window: &WebviewWindow<R>, paths: Vec<S
     let _ = window.emit(OPEN_PATHS_EVENT, payload);
 }
 
+fn reserve_blank_main_window_launch_path(
+    registry: &WindowRegistry,
+    first_path: &str,
+) -> Result<bool, String> {
+    let should_reuse_main = {
+        let registry_state = registry.0.lock().expect("window registry lock poisoned");
+        matches!(registry_state.window_paths.get("main"), Some(None))
+    };
+
+    if !should_reuse_main {
+        return Ok(false);
+    }
+
+    assign_window_launch_path("main", first_path, registry)?;
+    Ok(true)
+}
+
 fn try_dispatch_open_paths_to_blank_main_window<R: Runtime>(
     app: &AppHandle<R>,
     registry: &WindowRegistry,
@@ -585,25 +620,16 @@ fn try_dispatch_open_paths_to_blank_main_window<R: Runtime>(
         return 0;
     };
 
-    let should_reuse_main = {
-        let registry_state = registry.0.lock().expect("window registry lock poisoned");
-        matches!(registry_state.window_paths.get("main"), Some(None))
-    };
-
-    if !should_reuse_main {
+    let reserved_main = reserve_blank_main_window_launch_path(registry, first_path)
+        .unwrap_or(false);
+    if !reserved_main {
         return 0;
     }
 
-    let Some(window) = app.get_webview_window("main") else {
-        return 0;
-    };
-
-    if assign_window_launch_path("main", first_path, registry).is_err() {
-        return 0;
+    if let Some(window) = app.get_webview_window("main") {
+        emit_open_paths_to_window(&window, vec![first_path.clone()]);
+        focus_window_by_label(app, "main");
     }
-
-    emit_open_paths_to_window(&window, vec![first_path.clone()]);
-    focus_window_by_label(app, "main");
     1
 }
 
@@ -617,6 +643,75 @@ fn open_paths_for_app<R: Runtime>(
     for path in paths.into_iter().skip(dispatched_count) {
         let _ = create_or_focus_document_window(app, registry, &path);
     }
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C-unwind" fn application_open_files(
+    _this: &AnyObject,
+    _cmd: Sel,
+    sender: &NSApplication,
+    filenames: &NSArray<NSString>,
+) {
+    let paths = collect_paths_from_nsstrings(filenames);
+    dispatch_macos_open_files(paths);
+    sender.replyToOpenOrPrint(NSApplicationDelegateReply::Success);
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn install_macos_open_files_handler_on_main_thread() -> Result<(), String> {
+    let mtm = MainThreadMarker::new()
+        .ok_or_else(|| "macOS open-files handler must be installed on the main thread".to_string())?;
+    let app = NSApp(mtm);
+    let delegate = app
+        .delegate()
+        .ok_or_else(|| "Failed to access the macOS application delegate".to_string())?;
+    let delegate_object: &AnyObject = delegate.as_ref();
+    let delegate_class = delegate_object.class() as *const AnyClass as *mut AnyClass;
+    let selector = sel!(application:openFiles:);
+
+    if unsafe { class_respondsToSelector(delegate_class.cast_const(), selector) }.as_bool() {
+        return Ok(());
+    }
+
+    let added = unsafe {
+        class_addMethod(
+            delegate_class,
+            selector,
+            std::mem::transmute::<
+                unsafe extern "C-unwind" fn(&AnyObject, Sel, &NSApplication, &NSArray<NSString>),
+                Imp,
+            >(application_open_files),
+            b"v@:@@\0".as_ptr().cast(),
+        )
+    };
+
+    if added.as_bool() {
+        return Ok(());
+    }
+
+    Err("Failed to add macOS application:openFiles: handler".to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn install_macos_open_files_handler(app: &AppHandle<tauri::Wry>) -> Result<(), String> {
+    if MACOS_OPEN_FILES_HANDLER_INSTALLED.get().is_some() {
+        return Ok(());
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let app_handle = app.clone();
+    app_handle
+        .run_on_main_thread(move || {
+            let result = unsafe { install_macos_open_files_handler_on_main_thread() };
+            let _ = tx.send(result);
+        })
+        .map_err(|error| error.to_string())?;
+
+    rx.recv()
+        .map_err(|error| error.to_string())?
+        .map(|_| {
+            let _ = MACOS_OPEN_FILES_HANDLER_INSTALLED.set(());
+        })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -636,14 +731,27 @@ pub fn run() {
             app.set_menu(menu)?;
 
             let app_handle = app.handle().clone();
+            #[cfg(target_os = "macos")]
+            install_macos_open_files_handler(&app_handle)?;
+            #[cfg(target_os = "macos")]
+            let _ = MACOS_OPEN_FILES_APP_HANDLE.set(app_handle.clone());
+
             let registry = app.state::<WindowRegistry>();
             register_window_document("main", None, registry.inner());
 
-            if let Some(first_path) = launch_paths.first() {
+            let mut startup_paths = launch_paths.clone();
+            #[cfg(target_os = "macos")]
+            for path in take_pending_macos_open_files() {
+                if !startup_paths.contains(&path) {
+                    startup_paths.push(path);
+                }
+            }
+
+            if let Some(first_path) = startup_paths.first() {
                 let _ = assign_window_launch_path("main", first_path, registry.inner());
             }
 
-            for path in launch_paths.iter().skip(1) {
+            for path in startup_paths.iter().skip(1) {
                 let _ = create_or_focus_document_window(&app_handle, registry.inner(), path);
             }
             Ok(())
@@ -690,8 +798,8 @@ pub fn run() {
         #[cfg(target_os = "macos")]
         match event {
             tauri::RunEvent::Opened { urls } => {
-                let registry = app_handle.state::<WindowRegistry>();
-                open_paths_for_app(app_handle, registry.inner(), collect_paths_from_urls(urls));
+                let paths = collect_paths_from_urls(urls);
+                dispatch_macos_open_files(paths);
             }
             tauri::RunEvent::Reopen {
                 has_visible_windows,
@@ -1043,12 +1151,62 @@ where
         .collect()
 }
 
+#[cfg(target_os = "macos")]
+fn collect_paths_from_nsstrings(filenames: &NSArray<NSString>) -> Vec<String> {
+    (0..filenames.count())
+        .filter_map(|index| {
+            let filename = filenames.objectAtIndex(index);
+            normalize_open_path(PathBuf::from(filename.to_string()))
+        })
+        .collect()
+}
+
 fn normalize_open_path(path: PathBuf) -> Option<String> {
     if !is_supported_markdown_path(&path) {
         return None;
     }
 
     Some(path.to_string_lossy().into_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn pending_macos_open_files() -> &'static Mutex<Vec<String>> {
+    MACOS_PENDING_OPEN_FILES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[cfg(target_os = "macos")]
+fn queue_macos_open_files(paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+
+    let mut pending_paths = pending_macos_open_files()
+        .lock()
+        .expect("macOS open-files queue lock poisoned");
+    pending_paths.extend(paths);
+}
+
+#[cfg(target_os = "macos")]
+fn take_pending_macos_open_files() -> Vec<String> {
+    let mut pending_paths = pending_macos_open_files()
+        .lock()
+        .expect("macOS open-files queue lock poisoned");
+    std::mem::take(&mut *pending_paths)
+}
+
+#[cfg(target_os = "macos")]
+fn dispatch_macos_open_files(paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+
+    if let Some(app_handle) = MACOS_OPEN_FILES_APP_HANDLE.get() {
+        let registry = app_handle.state::<WindowRegistry>();
+        open_paths_for_app(app_handle, registry.inner(), paths);
+        return;
+    }
+
+    queue_macos_open_files(paths);
 }
 
 fn normalize_open_arg(raw: &str) -> Option<String> {
@@ -1661,10 +1819,10 @@ mod tests {
         assign_window_launch_path, canonicalize_markdown, collect_path_args,
         collect_paths_from_urls, default_app_settings, detect_newline_style, hydrate_settings,
         normalize_absolute_path, normalize_newlines, prepare_image_asset, register_window_document,
-        resolve_existing_document_key, resolve_supported_locale, resolve_window_document_path,
-        unregister_window, AppSettings, LanguagePreference, PrepareImageAssetRequest,
-        PreparedImageAsset, RecentFile, StoredAppSettings, SupportedLocale, WindowRegistry,
-        WindowRegistryState,
+        reserve_blank_main_window_launch_path, resolve_existing_document_key,
+        resolve_supported_locale, resolve_window_document_path, unregister_window, AppSettings,
+        LanguagePreference, PrepareImageAssetRequest, PreparedImageAsset, RecentFile,
+        StoredAppSettings, SupportedLocale, WindowRegistry, WindowRegistryState,
     };
     use std::{
         ffi::OsString,
@@ -1985,6 +2143,39 @@ mod tests {
 
         assign_window_launch_path("main", &document_path.to_string_lossy(), &registry)
             .expect("assigns launch path");
+
+        let registry_state = registry.0.lock().expect("window registry lock poisoned");
+        assert_eq!(
+            registry_state.window_paths.get("main"),
+            Some(&Some(document_key.clone()))
+        );
+        assert_eq!(registry_state.launch_paths.get("main"), Some(&document_key));
+        assert_eq!(
+            registry_state.document_windows.get(&document_key),
+            Some(&"main".to_string())
+        );
+
+        fs::remove_dir_all(directory).expect("cleans up temp directory");
+    }
+
+    #[test]
+    fn reserve_blank_main_window_launch_path_works_before_main_window_is_ready() {
+        let registry = WindowRegistry(Mutex::new(WindowRegistryState::default()));
+        let directory = create_test_directory("launch-path-reserved");
+        let document_path = directory.join("current.md");
+        fs::write(&document_path, "# Current").expect("writes markdown file");
+        let document_key = document_path
+            .canonicalize()
+            .expect("canonical document path")
+            .to_string_lossy()
+            .into_owned();
+        register_window_document("main", None, &registry);
+
+        let reserved =
+            reserve_blank_main_window_launch_path(&registry, &document_path.to_string_lossy())
+                .expect("reserves launch path");
+
+        assert!(reserved);
 
         let registry_state = registry.0.lock().expect("window registry lock poisoned");
         assert_eq!(

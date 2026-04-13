@@ -52,6 +52,7 @@ class FakeShell implements ShellPort {
   private readonly menuListeners = new Set<(action: string) => void>();
   private readonly openPathListeners = new Set<(paths: string[]) => void>();
   launchPath: string | null;
+  getCurrentWindowLaunchPathCalls = 0;
   newDraftWindowCalls = 0;
   openPathRequests: string[] = [];
   syncPathCalls: Array<string | null> = [];
@@ -61,6 +62,7 @@ class FakeShell implements ShellPort {
   }
 
   async getCurrentWindowLaunchPath() {
+    this.getCurrentWindowLaunchPathCalls += 1;
     const nextPath = this.launchPath;
     this.launchPath = null;
     return nextPath;
@@ -485,11 +487,12 @@ describe("Downmark app", () => {
   it(
     "renders a single-column workspace and keeps metadata in the toolbar row",
     async () => {
-      renderApp({
+      const dependencies = renderApp({
         initialPaths: ["/notes/current.md"],
       });
 
       await waitForOpenFile("current.md");
+      expect(dependencies.shell.getCurrentWindowLaunchPathCalls).toBe(1);
 
     expect(document.querySelector(".app-titlebar")).toBeNull();
     expect(screen.queryByRole("dialog", { name: "Recent files" })).not.toBeInTheDocument();
