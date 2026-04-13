@@ -49,20 +49,32 @@ type TestDependencies = AppDependencies & {
 };
 
 class FakeShell implements ShellPort {
-  private readonly listeners = new Set<(paths: string[]) => void>();
   private readonly menuListeners = new Set<(action: string) => void>();
+  launchPath: string | null;
+  newDraftWindowCalls = 0;
+  openPathRequests: string[] = [];
+  syncPathCalls: Array<string | null> = [];
 
-  constructor(private readonly initialPaths: string[] = []) {}
-
-  async handleInitialOpen() {
-    return [...this.initialPaths];
+  constructor(initialPath: string | null = null) {
+    this.launchPath = initialPath;
   }
 
-  async handleSecondaryOpen(onPaths: (paths: string[]) => void) {
-    this.listeners.add(onPaths);
-    return () => {
-      this.listeners.delete(onPaths);
-    };
+  async getCurrentWindowLaunchPath() {
+    const nextPath = this.launchPath;
+    this.launchPath = null;
+    return nextPath;
+  }
+
+  async newDraftWindow() {
+    this.newDraftWindowCalls += 1;
+  }
+
+  async openPathInNewWindow(path: string) {
+    this.openPathRequests.push(path);
+  }
+
+  async syncCurrentWindowPath(path: string | null) {
+    this.syncPathCalls.push(path);
   }
 
   async handleMenuAction(onAction: (action: string) => void) {
@@ -70,16 +82,6 @@ class FakeShell implements ShellPort {
     return () => {
       this.menuListeners.delete(onAction);
     };
-  }
-
-  async openRecent(path: string) {
-    return [path];
-  }
-
-  emit(paths: string[]) {
-    for (const listener of this.listeners) {
-      listener(paths);
-    }
   }
 
   emitMenuAction(action: string) {
@@ -391,7 +393,7 @@ function renderApp(options?: {
     ];
 
   const gateway = new FakeGateway(files, options?.settings);
-  const shell = new FakeShell(options?.initialPaths ?? []);
+  const shell = new FakeShell(options?.initialPaths?.[0] ?? null);
   const dialogs = createDialogs(options?.dialogOverrides);
   const dependencies: TestDependencies = {
     gateway,
@@ -628,8 +630,12 @@ describe("Downmark app", () => {
     });
 
     await waitForOpenFile("current.md");
-    expect(screen.getByRole("button", { name: "Open recent files" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Rich text editor" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Open recent files|최근 파일 열기/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("textbox", { name: /Rich text editor|리치 텍스트 편집기/ }),
+    ).toBeInTheDocument();
 
     act(() => {
       dependencies.shell.emitMenuAction("set-language-ko");
@@ -644,9 +650,12 @@ describe("Downmark app", () => {
       });
     });
 
-    expect(screen.getByRole("button", { name: "Open recent files" })).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Rich text editor" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "최근 파일 열기" })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Open recent files|최근 파일 열기/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("textbox", { name: /Rich text editor|리치 텍스트 편집기/ }),
+    ).toBeInTheDocument();
     expect(dependencies.gateway.settings.languagePreference).toBe("ko");
   });
 
@@ -720,8 +729,7 @@ describe("Downmark app", () => {
     });
   });
 
-  it("prompts before opening a new file when there are unsaved changes", async () => {
-    const user = userEvent.setup();
+  it("requests a new window when opening another file with unsaved changes", async () => {
     const dependencies = renderApp({
       dialogOverrides: {
         openFile: "/notes/next.md",
@@ -744,12 +752,11 @@ describe("Downmark app", () => {
     await waitFor(() => {
       expect(dependencies.dialogs.openFileMock).toHaveBeenCalledTimes(1);
     });
-
-    expect(await screen.findByRole("alertdialog", { name: "Unsaved changes" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Don't Save" }));
-
-    await waitForOpenFile("next.md");
+    await waitFor(() => {
+      expect(dependencies.shell.openPathRequests).toEqual(["/notes/next.md"]);
+    });
     expect(screen.queryByRole("alertdialog", { name: "Unsaved changes" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Unsaved");
   });
 
   it("announces external modification while dirty and offers recovery actions", async () => {
@@ -814,9 +821,9 @@ describe("Downmark app", () => {
     });
   });
 
-  it("resets the editor viewport to the top when opening another document", async () => {
+  it("requests a new window from recent files without changing the current rich view", async () => {
     const user = userEvent.setup();
-    renderApp({
+    const dependencies = renderApp({
       files: [
         {
           path: "/notes/current.md",
@@ -850,23 +857,16 @@ describe("Downmark app", () => {
 
     const drawer = await screen.findByRole("dialog", { name: "Recent files" });
     await user.click(within(drawer).getByRole("button", { name: /next\.md/i }));
-
-    const unsavedPrompt = screen.queryByRole("alertdialog", {
-      name: "Unsaved changes",
-    });
-    if (unsavedPrompt) {
-      await user.click(within(unsavedPrompt).getByRole("button", { name: "Don't Save" }));
-    }
-
-    await waitForOpenFile("next.md");
     await waitFor(() => {
-      expect(viewport!.scrollTop).toBe(0);
+      expect(dependencies.shell.openPathRequests).toEqual(["/notes/next.md"]);
     });
+    expect(screen.queryByRole("dialog", { name: "Recent files" })).not.toBeInTheDocument();
+    expect(screen.getByTitle("/notes/current.md")).toHaveTextContent("current.md");
   });
 
-  it("keeps raw mode, auto-grows the textarea, and resets to the top when opening another document", async () => {
+  it("requests a new window from recent files without changing the current raw view", async () => {
     const user = userEvent.setup();
-    renderApp({
+    const dependencies = renderApp({
       files: [
         {
           path: "/notes/current.md",
@@ -925,28 +925,17 @@ describe("Downmark app", () => {
       await user.click(screen.getByRole("button", { name: "Open recent files" }));
       const drawer = await screen.findByRole("dialog", { name: "Recent files" });
       await user.click(within(drawer).getByRole("button", { name: /next\.md/i }));
-
-      const unsavedPrompt = screen.queryByRole("alertdialog", {
-        name: "Unsaved changes",
+      await waitFor(() => {
+      expect(dependencies.shell.openPathRequests).toEqual(["/notes/next.md"]);
       });
-      if (unsavedPrompt) {
-        await user.click(within(unsavedPrompt).getByRole("button", { name: "Don't Save" }));
-      }
-
-      await waitForOpenFile("next.md");
       expect(screen.getByRole("radio", { name: "Raw" })).toBeChecked();
-
       const nextTextarea = await screen.findByRole("textbox", {
         name: "Raw markdown editor",
       }) as HTMLTextAreaElement;
-
-      await waitFor(() => {
-        expect(viewport!.scrollTop).toBe(0);
-      });
-      await waitFor(() => {
-        expect(nextTextarea.selectionStart).toBe(0);
-      });
-      expect(nextTextarea.selectionEnd).toBe(0);
+      expect(nextTextarea.value.trimEnd()).toBe(
+        `# Current\n\n${"Current line\n".repeat(120)}`.trimEnd(),
+      );
+      expect(screen.getByTitle("/notes/current.md")).toHaveTextContent("current.md");
     } finally {
       if (restoreScrollHeight) {
         Object.defineProperty(
@@ -1015,7 +1004,7 @@ describe("Downmark app", () => {
     expect(sidebarToggle).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("supports keyboard shortcuts for open, save, and save as", async () => {
+  it("supports keyboard shortcuts for new, open, save, and save as", async () => {
     const dependencies = renderApp({
       initialPaths: ["/notes/current.md"],
       dialogOverrides: {
@@ -1026,9 +1015,17 @@ describe("Downmark app", () => {
 
     await waitForOpenFile("current.md");
 
+    fireEvent.keyDown(window, { key: "n", ctrlKey: true });
+    await waitFor(() => {
+      expect(dependencies.shell.newDraftWindowCalls).toBe(1);
+    });
+
     fireEvent.keyDown(window, { key: "o", ctrlKey: true });
     await waitFor(() => {
       expect(dependencies.dialogs.openFileMock).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(dependencies.shell.openPathRequests).toEqual(["/notes/next.md"]);
     });
 
     fireEvent.keyDown(window, { key: "s", ctrlKey: true });
@@ -1107,19 +1104,13 @@ describe("Downmark app", () => {
       dependencies.shell.emitMenuAction("new-draft");
     });
     await waitFor(() => {
-      expect(screen.getByText("Scratch note")).toBeInTheDocument();
+      expect(dependencies.shell.newDraftWindowCalls).toBe(1);
     });
+    expect(screen.getByTitle("/notes/current.md")).toHaveTextContent("current.md");
     expect(screen.getByRole("radio", { name: "Rich" })).toBeChecked();
-    const richEditor = screen.getByRole("textbox", { name: "Rich text editor" });
-    await waitFor(() => {
-      expect(richEditor).toHaveFocus();
-    });
-    await waitFor(() => {
-      expect(richEditor).not.toHaveTextContent(/\S/);
-    });
   });
 
-  it("opens a fresh raw draft at the top when requested from raw mode", async () => {
+  it("requests a new draft window without changing the current raw view", async () => {
     const dependencies = renderApp({
       initialPaths: ["/notes/current.md"],
     });
@@ -1151,7 +1142,7 @@ describe("Downmark app", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText("Scratch note")).toBeInTheDocument();
+      expect(dependencies.shell.newDraftWindowCalls).toBe(1);
     });
     expect(screen.getByRole("radio", { name: "Raw" })).toBeChecked();
 
@@ -1159,14 +1150,8 @@ describe("Downmark app", () => {
       name: "Raw markdown editor",
     }) as HTMLTextAreaElement;
 
-    await waitFor(() => {
-      expect(viewport!.scrollTop).toBe(0);
-    });
-    await waitFor(() => {
-      expect(draftTextarea.selectionStart).toBe(0);
-    });
-    expect(draftTextarea.selectionEnd).toBe(0);
-    expect(draftTextarea).toHaveValue("");
+    expect(draftTextarea).toHaveValue("# Current\n\nBody");
+    expect(screen.getByTitle("/notes/current.md")).toHaveTextContent("current.md");
   });
 
   it("renders markdown images and tables when switching from raw to rich", async () => {
@@ -1193,18 +1178,15 @@ describe("Downmark app", () => {
     expect(within(editor).getByText("2")).toBeInTheDocument();
   });
 
-  it("opens a secondary file-open request after initialization", async () => {
+  it("syncs the current window path after the launch document loads", async () => {
     const dependencies = renderApp({
       initialPaths: ["/notes/current.md"],
     });
 
     await waitForOpenFile("current.md");
-
-    act(() => {
-      dependencies.shell.emit(["/notes/next.md"]);
+    await waitFor(() => {
+      expect(dependencies.shell.syncPathCalls).toContain("/notes/current.md");
     });
-
-    await waitForOpenFile("next.md");
   });
 
   it("shows edge table controls and adds rows and columns from rich mode", async () => {

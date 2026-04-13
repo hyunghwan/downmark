@@ -52,12 +52,8 @@ import {
 } from "./features/runtime/tauri-runtime";
 import { ShellIntegration } from "./features/shell/shell-integration";
 
-type DeferredAction =
-  | { kind: "open-path"; path: string; mode: EditorMode }
-  | { kind: "new-draft"; mode: EditorMode };
 type PromptState =
   | { kind: "none" }
-  | { kind: "unsaved"; action: DeferredAction }
   | { kind: "external-modified" };
 type DialogResult = string | string[] | null;
 type EditorFocusTarget = "raw" | "rich" | null;
@@ -96,7 +92,11 @@ export interface AppDependencies {
   > & { destroy?: () => void };
   shell: Pick<
     ShellIntegration,
-    "handleInitialOpen" | "handleMenuAction" | "handleSecondaryOpen" | "openRecent"
+    | "getCurrentWindowLaunchPath"
+    | "handleMenuAction"
+    | "newDraftWindow"
+    | "openPathInNewWindow"
+    | "syncCurrentWindowPath"
   >;
   dialogs: DialogPort;
   fileStatusPollMs?: number;
@@ -484,6 +484,11 @@ function createImageMarkdown(asset: EditorImageAsset) {
   return `![${asset.alt}](${asset.src})`;
 }
 
+function extractAlreadyOpenPath(error: unknown) {
+  const value = String(error);
+  return value.startsWith("already-open:") ? value.slice("already-open:".length) : null;
+}
+
 function replaceSelection(value: string, selection: RawImageSelection, inserted: string) {
   const start = Math.max(0, Math.min(selection.start, value.length));
   const end = Math.max(start, Math.min(selection.end, value.length));
@@ -815,15 +820,37 @@ function App({ dependencies }: AppProps) {
       const richDoc = gateway.toRich(file.markdown);
       const nextSession = openFileSession(file, richDoc, mode);
       updateSession(nextSession);
-      applySettings(await gateway.recordRecentFile(path));
+      applySettings(await gateway.recordRecentFile(file.path));
+      await shell.syncCurrentWindowPath(file.path);
       setFocusTarget(mode);
+      return true;
     } catch (error) {
       await dialogs.showMessage(messages.errors.openFailed(String(error)), {
         title: messages.appTitle,
         kind: "error",
       });
+      return false;
     } finally {
       setBusyLabel(null);
+    }
+  });
+
+  const showWindowCommandError = useEffectEvent(async (error: unknown) => {
+    const alreadyOpenPath = extractAlreadyOpenPath(error);
+    await dialogs.showMessage(
+      alreadyOpenPath ? messages.errors.alreadyOpen(alreadyOpenPath) : String(error),
+      {
+      title: messages.appTitle,
+      kind: "error",
+      },
+    );
+  });
+
+  const requestOpenInNewWindow = useEffectEvent(async (path: string) => {
+    try {
+      await shell.openPathInNewWindow(path);
+    } catch (error) {
+      await showWindowCommandError(error);
     }
   });
 
@@ -831,7 +858,7 @@ function App({ dependencies }: AppProps) {
     const result = await dialogs.openFile(markdownFilters);
 
     if (isStringPath(result)) {
-      await requestOpenPath(result);
+      await requestOpenInNewWindow(result);
     }
   });
 
@@ -895,10 +922,12 @@ function App({ dependencies }: AppProps) {
         richEditorRef.current?.setContent(savedSession.richDoc);
       }
 
+      await shell.syncCurrentWindowPath(result.path);
       applySettings(await gateway.recordRecentFile(result.path));
       return true;
     } catch (error) {
       const errorMessage = String(error);
+      const alreadyOpenPath = extractAlreadyOpenPath(error);
       const conflictKind =
         errorMessage === "stale-write" ? "stale-write" : "save-failed";
       updateSession((current) => markConflict(current, conflictKind, errorMessage));
@@ -906,7 +935,9 @@ function App({ dependencies }: AppProps) {
       await dialogs.showMessage(
         errorMessage === "stale-write"
           ? messages.errors.staleWrite
-          : messages.errors.saveFailed(errorMessage),
+          : alreadyOpenPath
+            ? messages.errors.alreadyOpen(alreadyOpenPath)
+            : messages.errors.saveFailed(errorMessage),
         {
           title: messages.appTitle,
           kind: "error",
@@ -1067,61 +1098,12 @@ function App({ dependencies }: AppProps) {
     },
   );
 
-  const runDeferredAction = useEffectEvent(async (action: DeferredAction) => {
-    if (action.kind === "open-path") {
-      await openPath(action.path, action.mode);
-      return;
-    }
-
-    pendingSurfaceRestoreRef.current = createTopSurfaceRestoreState(action.mode);
-    updateSession(createDraftSession(action.mode));
-    setFocusTarget(action.mode);
-  });
-
-  const requestOpenPath = useEffectEvent(async (path: string) => {
-    const currentSession = sessionRef.current;
-    const latestSession =
-      currentSession.mode === "rich"
-        ? syncSessionFromRichEditor(currentSession)
-        : currentSession;
-
-    if (latestSession !== currentSession) {
-      updateSession(latestSession);
-    }
-
-    if (latestSession.dirty) {
-      setPromptState({
-        kind: "unsaved",
-        action: { kind: "open-path", path, mode: latestSession.mode },
-      });
-      return;
-    }
-
-    await openPath(path, latestSession.mode);
-  });
-
   const requestNewDraft = useEffectEvent(async () => {
-    const currentSession = sessionRef.current;
-    const latestSession =
-      currentSession.mode === "rich"
-        ? syncSessionFromRichEditor(currentSession)
-        : currentSession;
-
-    if (latestSession !== currentSession) {
-      updateSession(latestSession);
+    try {
+      await shell.newDraftWindow();
+    } catch (error) {
+      await showWindowCommandError(error);
     }
-
-    if (latestSession.dirty) {
-      setPromptState({
-        kind: "unsaved",
-        action: { kind: "new-draft", mode: latestSession.mode },
-      });
-      return;
-    }
-
-    updateSession(createDraftSession(latestSession.mode));
-    pendingSurfaceRestoreRef.current = createTopSurfaceRestoreState(latestSession.mode);
-    setFocusTarget(latestSession.mode);
   });
 
   const blurEditorSurfaces = useEffectEvent(() => {
@@ -1171,7 +1153,7 @@ function App({ dependencies }: AppProps) {
 
   const requestOpenRecentPath = useEffectEvent(async (path: string) => {
     closeRecentDrawer();
-    await requestOpenPath(path);
+    await requestOpenInNewWindow(path);
   });
 
   const syncSessionFromRichEditor = useEffectEvent(
@@ -1335,22 +1317,6 @@ function App({ dependencies }: AppProps) {
     const currentSession = sessionRef.current;
     setPromptState({ kind: "none" });
 
-    if (currentPrompt.kind === "unsaved") {
-      if (actionId === "cancel") {
-        return;
-      }
-
-      if (actionId === "save") {
-        const saved = await saveCurrent();
-        if (!saved) {
-          return;
-        }
-      }
-
-      await runDeferredAction(currentPrompt.action);
-      return;
-    }
-
     if (currentPrompt.kind === "external-modified") {
         if (!currentSession.path) {
           return;
@@ -1370,10 +1336,7 @@ function App({ dependencies }: AppProps) {
   const handlePromptDismiss = useEffectEvent(() => {
     if (promptState.kind === "external-modified") {
       void handlePromptAction("keep");
-      return;
     }
-
-    void handlePromptAction("cancel");
   });
 
   const applyLanguagePreference = useEffectEvent(
@@ -1462,30 +1425,10 @@ function App({ dependencies }: AppProps) {
   });
 
   useEffect(() => {
-    let unlistenOpen: (() => void) | null = null;
     let unlistenMenu: (() => void) | null = null;
     let disposed = false;
 
     void (async () => {
-      const nextSettings = await refreshSettings();
-      if (disposed) {
-        return;
-      }
-
-      applySettings(nextSettings);
-      setInitialized(true);
-
-      unlistenOpen = await shell.handleSecondaryOpen((paths) => {
-        const nextPath = paths[0];
-        if (nextPath) {
-          void requestOpenPath(nextPath);
-        }
-      });
-      if (disposed) {
-        unlistenOpen?.();
-        return;
-      }
-
       unlistenMenu = await shell.handleMenuAction((action) => {
         void runMenuAction(action);
       });
@@ -1494,25 +1437,35 @@ function App({ dependencies }: AppProps) {
         return;
       }
 
-      const paths = await shell.handleInitialOpen();
+      const nextSettings = await refreshSettings();
       if (disposed) {
         return;
       }
 
-      const firstPath = paths[0];
-      if (firstPath) {
-        void requestOpenPath(firstPath);
+      applySettings(nextSettings);
+      setInitialized(true);
+
+      const launchPath = await shell.getCurrentWindowLaunchPath();
+      if (disposed) {
+        return;
+      }
+
+      if (launchPath) {
+        const opened = await openPath(launchPath, sessionRef.current.mode);
+        if (!opened) {
+          await shell.syncCurrentWindowPath(null);
+        }
       } else {
+        await shell.syncCurrentWindowPath(sessionRef.current.path);
         setFocusTarget("rich");
       }
     })();
 
     return () => {
       disposed = true;
-      unlistenOpen?.();
       unlistenMenu?.();
     };
-  }, [shell]);
+  }, [openPath, runMenuAction, shell]);
 
   const handleGlobalKeyDown = useEffectEvent((event: KeyboardEvent) => {
     if (event.defaultPrevented || event.altKey) {
@@ -1554,6 +1507,12 @@ function App({ dependencies }: AppProps) {
       }
 
       void saveCurrent();
+      return;
+    }
+
+    if (key === "n") {
+      event.preventDefault();
+      void requestNewDraft();
       return;
     }
 
@@ -2006,38 +1965,22 @@ function App({ dependencies }: AppProps) {
       </div>
 
       <PromptDialog
-        actions={
-          promptState.kind === "external-modified"
-            ? [
-                {
-                  id: "reload",
-                  label: messages.prompts.reloadFromDisk,
-                  tone: "primary",
-                },
-                { id: "keep", label: messages.prompts.keepMine },
-                { id: "save-as", label: messages.prompts.saveAs },
-              ]
-            : [
-                { id: "save", label: messages.prompts.save, tone: "primary" },
-                { id: "discard", label: messages.prompts.dontSave },
-                { id: "cancel", label: messages.prompts.cancel },
-              ]
-        }
-        body={
-          promptState.kind === "external-modified"
-            ? messages.prompts.externalModifiedBody
-            : messages.prompts.unsavedBody
-        }
+        actions={[
+          {
+            id: "reload",
+            label: messages.prompts.reloadFromDisk,
+            tone: "primary",
+          },
+          { id: "keep", label: messages.prompts.keepMine },
+          { id: "save-as", label: messages.prompts.saveAs },
+        ]}
+        body={messages.prompts.externalModifiedBody}
         onAction={(actionId) => {
           void handlePromptAction(actionId);
         }}
         onRequestClose={handlePromptDismiss}
-        open={promptState.kind !== "none"}
-        title={
-          promptState.kind === "external-modified"
-            ? messages.prompts.externalModifiedTitle
-            : messages.prompts.unsavedTitle
-        }
+        open={promptState.kind === "external-modified"}
+        title={messages.prompts.externalModifiedTitle}
       />
     </>
   );

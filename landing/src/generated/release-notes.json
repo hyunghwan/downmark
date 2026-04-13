@@ -1,12 +1,69 @@
 {
-  "generatedAt": "2026-04-11T06:21:48.508Z",
+  "generatedAt": "2026-04-13T05:09:32.330Z",
   "releaseUrl": "https://github.com/hyunghwan/downmark/releases",
   "repositoryUrl": "https://github.com/hyunghwan/downmark",
   "sections": [
     {
       "version": "Unreleased",
       "date": null,
-      "categories": []
+      "categories": [
+        {
+          "title": "Changed",
+          "items": [
+            {
+              "hash": "9676cd2",
+              "text": "Publish unsigned macOS DMGs in main-build (#6)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "version": "main-build",
+      "date": "2026-04-12",
+      "categories": [
+        {
+          "title": "Changed",
+          "items": [
+            {
+              "hash": "bcf65ac",
+              "text": "Harden macOS release packaging"
+            }
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {
+              "hash": "2007721",
+              "text": "Main-build release publishing (#5)"
+            },
+            {
+              "hash": "8a4972d",
+              "text": "Main build downloads and CI stability"
+            },
+            {
+              "hash": "2b1866f",
+              "text": "MacOS opening, table UX, and merge builds"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "version": "v0.1.1",
+      "date": "2026-04-10",
+      "categories": [
+        {
+          "title": "Changed",
+          "items": [
+            {
+              "hash": "e518973",
+              "text": "Ship v0.1.1 with stable release downloads"
+            }
+          ]
+        }
+      ]
     },
     {
       "version": "v0.1.0",

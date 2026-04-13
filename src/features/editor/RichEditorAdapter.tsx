@@ -215,7 +215,11 @@ const RichEditorAdapterInner = forwardRef<RichEditorAdapterHandle, RichEditorAda
       }
 
       editor.chain().focus().run();
-      (editor.view.dom as HTMLElement).focus();
+      try {
+        (editor.view.dom as HTMLElement).focus();
+      } catch {
+        // Tiptap can briefly report no mounted view during remount-heavy updates.
+      }
     }, [autoFocus, contentVersion, editor]);
 
     useImperativeHandle(

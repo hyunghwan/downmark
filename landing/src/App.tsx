@@ -6,7 +6,8 @@ const releaseNotes = releaseNotesData as ReleaseNotesPayload;
 const releasesUrl = "https://github.com/hyunghwan/downmark/releases";
 const mainBuildReleaseUrl = "https://github.com/hyunghwan/downmark/releases/tag/main-build";
 const appUrl = "https://github.com/hyunghwan/downmark";
-const appleSiliconDownloadUrl = mainBuildReleaseUrl;
+const appleSiliconDownloadUrl =
+  "https://github.com/hyunghwan/downmark/releases/download/main-build/Downmark-darwin-aarch64.dmg";
 const windowsDownloadUrl =
   "https://github.com/hyunghwan/downmark/releases/download/main-build/Downmark-windows-x64-setup.exe";
 
@@ -133,15 +134,6 @@ function SideNav({
           </div>
         ))}
       </div>
-      <div className="nav-meta">
-        <a href={appUrl} target="_blank" rel="noreferrer">
-          GitHub
-        </a>
-        <span className="nav-dot">·</span>
-        <a href="https://byun.design/" target="_blank" rel="noreferrer">
-          byun.design
-        </a>
-      </div>
     </nav>
   );
 }
@@ -184,11 +176,6 @@ function HomePage() {
           <div id="download">
             <DownloadButtons />
           </div>
-          <p className="hero-note">
-            Windows downloads start immediately. The macOS button opens the rolling main-build
-            release page, which includes either a notarized DMG or an unsigned DMG depending on the
-            current CI signing setup. Web preview resets on refresh.
-          </p>
         </div>
       </section>
 
@@ -206,8 +193,16 @@ function HomePage() {
           <div>
             <h3>Where can I download it?</h3>
             <p>
-              Use the Windows button for the latest installer, or open the macOS main-build page to
-              download the newest build. macOS releases may be notarized DMGs or unsigned DMGs.
+              Use the Mac or Windows buttons for the latest Apple Silicon DMG or Windows installer.
+              Intel Mac builds remain available on the main-build release page.
+            </p>
+          </div>
+          <div>
+            <h3>How do I open the unsigned Mac build?</h3>
+            <p>
+              Open the DMG, drag Downmark into Applications, then Control-click the app and choose
+              Open the first time. If macOS still blocks it, go to System Settings &gt; Privacy
+              &amp; Security and click Open Anyway.
             </p>
           </div>
           <div>

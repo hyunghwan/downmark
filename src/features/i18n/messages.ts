@@ -22,6 +22,7 @@ export interface LocaleMessages {
     savingAs: string;
   };
   errors: {
+    alreadyOpen: (path: string) => string;
     openFailed: (error: string) => string;
     saveFailed: (error: string) => string;
     staleWrite: string;
@@ -114,6 +115,8 @@ const EN_MESSAGES: LocaleMessages = {
     savingAs: "Saving as",
   },
   errors: {
+    alreadyOpen: (path) =>
+      `This file is already open in another window.\n\n${path}`,
     openFailed: (error) => `Unable to open file.\n\n${error}`,
     saveFailed: (error) => `Save failed.\n\n${error}`,
     staleWrite:
@@ -309,6 +312,8 @@ const KO_MESSAGES: LocaleMessages = {
     savingAs: "다른 이름으로 저장 중",
   },
   errors: {
+    alreadyOpen: (path) =>
+      `이 파일은 이미 다른 창에서 열려 있습니다.\n\n${path}`,
     openFailed: (error) => `파일을 열 수 없습니다.\n\n${error}`,
     saveFailed: (error) => `저장하지 못했습니다.\n\n${error}`,
     staleWrite:
@@ -501,6 +506,8 @@ const ES_MESSAGES: LocaleMessages = {
     savingAs: "Guardando como",
   },
   errors: {
+    alreadyOpen: (path) =>
+      `Este archivo ya está abierto en otra ventana.\n\n${path}`,
     openFailed: (error) => `No se pudo abrir el archivo.\n\n${error}`,
     saveFailed: (error) => `No se pudo guardar.\n\n${error}`,
     staleWrite:
