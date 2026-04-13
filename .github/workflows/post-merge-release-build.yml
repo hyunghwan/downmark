@@ -245,6 +245,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          APP_VERSION="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
 
           if gh release view main-build >/dev/null 2>&1; then
             gh release delete main-build --yes --cleanup-tag
@@ -252,7 +253,7 @@ jobs:
 
           gh release create main-build \
             --target "${GITHUB_SHA}" \
-            --title "Downmark main build" \
+            --title "Downmark v${APP_VERSION} main build" \
             --notes-file main-build-notes.md \
             --latest \
             public-release/*
