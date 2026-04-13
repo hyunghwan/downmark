@@ -98,13 +98,13 @@ git push origin v0.1.0
 4. Wait for the `Release` GitHub Actions workflow to finish.
 5. Open the GitHub Release page and download the generated `.dmg`, `.app`, `.exe`, or `.msi` assets.
 
-If you only need the newest merged build for testing, use the `main-build` prerelease instead of waiting for a version tag. Windows installers download directly from that prerelease, and macOS installers appear there once signing and notarization are configured.
+If you only need the newest merged build for testing, use the `main-build` prerelease instead of waiting for a version tag. Windows installers download directly from that prerelease. macOS assets are also attached there on every successful `main` build, either as notarized DMGs when Apple signing is configured or as unsigned DMGs when it is not.
 
 The workflow validates that the Git tag and all app version files match before publishing. If you prefer reviewing a draft release before it becomes public, change `releaseDraft: false` to `releaseDraft: true` in `.github/workflows/release.yml`.
 
 ### Optional signing and notarization
 
-If the signing secrets below are configured, the macOS release workflows will sign and notarize the installers automatically. If they are missing, the `main-build` prerelease still refreshes with non-macOS assets, but macOS installers are skipped instead of publishing broken downloads.
+If the signing secrets below are configured, the macOS release workflows will sign and notarize the installers automatically. If they are missing, the `main-build` prerelease still refreshes with unsigned macOS DMGs so testers can still download the latest app, but Gatekeeper bypass steps may be required locally.
 
 macOS GitHub Actions secrets:
 

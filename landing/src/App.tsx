@@ -185,9 +185,9 @@ function HomePage() {
             <DownloadButtons />
           </div>
           <p className="hero-note">
-            Windows downloads start immediately. macOS builds are listed on the latest verified
-            main-build release page when notarized installers are available. Web preview resets on
-            refresh.
+            Windows downloads start immediately. The macOS button opens the rolling main-build
+            release page, which includes either a notarized DMG or an unsigned DMG depending on the
+            current CI signing setup. Web preview resets on refresh.
           </p>
         </div>
       </section>
@@ -207,7 +207,7 @@ function HomePage() {
             <h3>Where can I download it?</h3>
             <p>
               Use the Windows button for the latest installer, or open the macOS main-build page to
-              download the newest notarized build when it is available.
+              download the newest build. macOS releases may be notarized DMGs or unsigned DMGs.
             </p>
           </div>
           <div>
