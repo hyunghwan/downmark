@@ -193,6 +193,11 @@ jobs:
           - If Apple signing secrets are configured, macOS assets are notarized DMGs.
           - Otherwise, macOS assets are unsigned DMGs and may require bypassing Gatekeeper locally.
 
+          Opening unsigned macOS builds:
+          1. Open the DMG and drag Downmark into Applications.
+          2. Control-click the app and choose Open on the first launch.
+          3. If macOS still blocks it, use System Settings > Privacy & Security > Open Anyway.
+
           Assets:
           EOF
 

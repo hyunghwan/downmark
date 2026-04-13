@@ -98,13 +98,19 @@ git push origin v0.1.0
 4. Wait for the `Release` GitHub Actions workflow to finish.
 5. Open the GitHub Release page and download the generated `.dmg`, `.app`, `.exe`, or `.msi` assets.
 
-If you only need the newest merged build for testing, use the `main-build` prerelease instead of waiting for a version tag. Windows installers download directly from that prerelease. macOS assets are also attached there on every successful `main` build, either as notarized DMGs when Apple signing is configured or as unsigned DMGs when it is not.
+If you only need the newest merged build for testing, use the `main-build` prerelease instead of waiting for a version tag. Windows installers download directly from that prerelease. Apple Silicon macOS downloads can also link directly to the latest `main-build` DMG, and Intel/macOS fallback assets remain listed on the release page.
 
 The workflow validates that the Git tag and all app version files match before publishing. If you prefer reviewing a draft release before it becomes public, change `releaseDraft: false` to `releaseDraft: true` in `.github/workflows/release.yml`.
 
 ### Optional signing and notarization
 
 If the signing secrets below are configured, the macOS release workflows will sign and notarize the installers automatically. If they are missing, the `main-build` prerelease still refreshes with unsigned macOS DMGs so testers can still download the latest app, but Gatekeeper bypass steps may be required locally.
+
+To open the unsigned macOS DMG:
+
+1. Open the DMG and drag `Downmark.app` into `Applications`.
+2. Control-click the app in `Applications` and choose `Open` on the first launch.
+3. If macOS still blocks it, go to `System Settings > Privacy & Security` and click `Open Anyway`.
 
 macOS GitHub Actions secrets:
 

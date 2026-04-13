@@ -1,39 +1,46 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { hasTauriRuntime } from "../runtime/tauri-runtime";
 
-const OPEN_REQUEST_EVENT = "downmark://open-paths";
 const MENU_ACTION_EVENT = "downmark://menu-action";
-
-interface OpenPathsPayload {
-  paths: string[];
-}
 
 interface MenuActionPayload {
   action: string;
 }
 
 export class ShellIntegration {
-  async handleInitialOpen() {
+  async getCurrentWindowLaunchPath() {
     if (!hasTauriRuntime()) {
-      return [];
+      return null;
     }
 
-    return invoke<string[]>("get_initial_open_paths");
+    return invoke<string | null>("get_current_window_launch_path");
   }
 
-  async handleSecondaryOpen(onPaths: (paths: string[]) => void) {
+  async newDraftWindow() {
     if (!hasTauriRuntime()) {
-      return (() => {}) as UnlistenFn;
+      return;
     }
 
-    return listen<OpenPathsPayload>(
-      OPEN_REQUEST_EVENT,
-      (event: { payload: OpenPathsPayload }) => {
-        onPaths(event.payload.paths);
-      },
-    ) as Promise<UnlistenFn>;
+    await invoke("new_draft_window");
+  }
+
+  async openPathInNewWindow(path: string) {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+
+    await invoke("open_path_in_new_window", { path });
+  }
+
+  async syncCurrentWindowPath(path: string | null) {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+
+    await invoke("sync_current_window_path", { path });
   }
 
   async handleMenuAction(onAction: (action: string) => void) {
@@ -41,15 +48,11 @@ export class ShellIntegration {
       return (() => {}) as UnlistenFn;
     }
 
-    return listen<MenuActionPayload>(
+    return getCurrentWindow().listen<MenuActionPayload>(
       MENU_ACTION_EVENT,
       (event: { payload: MenuActionPayload }) => {
         onAction(event.payload.action);
       },
-    ) as Promise<UnlistenFn>;
-  }
-
-  async openRecent(path: string) {
-    return [path];
+    );
   }
 }
