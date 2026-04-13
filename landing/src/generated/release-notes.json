@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-13T05:09:32.330Z",
+  "generatedAt": "2026-04-13T05:42:30.034Z",
   "releaseUrl": "https://github.com/hyunghwan/downmark/releases",
   "repositoryUrl": "https://github.com/hyunghwan/downmark",
   "sections": [
@@ -10,6 +10,14 @@
         {
           "title": "Changed",
           "items": [
+            {
+              "hash": "d3f59f6",
+              "text": "Repair unsigned macOS release DMGs"
+            },
+            {
+              "hash": "ea0719e",
+              "text": "Ship latest editor changes and direct build downloads (#8)"
+            },
             {
               "hash": "9676cd2",
               "text": "Publish unsigned macOS DMGs in main-build (#6)"

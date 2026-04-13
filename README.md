@@ -82,7 +82,7 @@ GitHub Releases can publish downloadable Windows and macOS bundles directly from
 
 - In the repository settings, make sure `Actions > General > Workflow permissions` is set to `Read and write permissions` so the workflow can create releases and upload assets.
 - The workflow is triggered by pushing a version tag like `v0.1.0`, or by running `Release` manually from the Actions tab.
-- Pushes to `main` also run `Post-Merge Release Build`, which refreshes a rolling prerelease tag named `main-build` with the latest verified installers that were successfully packaged in CI.
+- Pushes to `main` also run `Post-Merge Release Build`, which refreshes a rolling release tag named `main-build` with the latest verified installers that were successfully packaged in CI.
 
 ### Release flow
 
@@ -98,13 +98,13 @@ git push origin v0.1.0
 4. Wait for the `Release` GitHub Actions workflow to finish.
 5. Open the GitHub Release page and download the generated `.dmg`, `.app`, `.exe`, or `.msi` assets.
 
-If you only need the newest merged build for testing, use the `main-build` prerelease instead of waiting for a version tag. Windows installers download directly from that prerelease. Apple Silicon macOS downloads can also link directly to the latest `main-build` DMG, and Intel/macOS fallback assets remain listed on the release page.
+If you only need the newest merged build for testing, use the rolling `main-build` release instead of waiting for a version tag. Windows installers download directly from that release. Apple Silicon macOS downloads can also link directly to the latest `main-build` DMG, and Intel/macOS fallback assets remain listed on the release page.
 
 The workflow validates that the Git tag and all app version files match before publishing. If you prefer reviewing a draft release before it becomes public, change `releaseDraft: false` to `releaseDraft: true` in `.github/workflows/release.yml`.
 
 ### Optional signing and notarization
 
-If the signing secrets below are configured, the macOS release workflows will sign and notarize the installers automatically. If they are missing, the `main-build` prerelease still refreshes with unsigned macOS DMGs so testers can still download the latest app, but Gatekeeper bypass steps may be required locally.
+If the signing secrets below are configured, the macOS release workflows will sign and notarize the installers automatically. If they are missing, the rolling `main-build` release still refreshes with unsigned macOS DMGs so testers can still download the latest app, but Gatekeeper bypass steps may be required locally.
 
 To open the unsigned macOS DMG:
 

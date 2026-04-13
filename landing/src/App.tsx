@@ -4,7 +4,7 @@ import type { ReleaseNotesPayload, ReleaseNoteSection } from "./types";
 
 const releaseNotes = releaseNotesData as ReleaseNotesPayload;
 const releasesUrl = "https://github.com/hyunghwan/downmark/releases";
-const mainBuildReleaseUrl = "https://github.com/hyunghwan/downmark/releases/tag/main-build";
+const latestBuildReleaseUrl = "https://github.com/hyunghwan/downmark/releases/tag/main-build";
 const appUrl = "https://github.com/hyunghwan/downmark";
 const appleSiliconDownloadUrl =
   "https://github.com/hyunghwan/downmark/releases/download/main-build/Downmark-darwin-aarch64.dmg";
@@ -301,8 +301,8 @@ export default function App() {
               <a href={releasesUrl} target="_blank" rel="noreferrer">
                 Releases
               </a>
-              <a href={mainBuildReleaseUrl} target="_blank" rel="noreferrer">
-                Main build
+              <a href={latestBuildReleaseUrl} target="_blank" rel="noreferrer">
+                Latest build
               </a>
               <a href={appUrl} target="_blank" rel="noreferrer">
                 GitHub

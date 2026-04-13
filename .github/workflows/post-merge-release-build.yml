@@ -254,5 +254,5 @@ jobs:
             --target "${GITHUB_SHA}" \
             --title "Downmark main build" \
             --notes-file main-build-notes.md \
-            --prerelease \
+            --latest \
             public-release/*
