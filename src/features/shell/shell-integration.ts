@@ -5,9 +5,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { hasTauriRuntime } from "../runtime/tauri-runtime";
 
 const MENU_ACTION_EVENT = "downmark://menu-action";
+const OPEN_PATHS_EVENT = "downmark://open-paths";
 
 interface MenuActionPayload {
   action: string;
+}
+
+interface OpenPathsPayload {
+  paths: string[];
 }
 
 export class ShellIntegration {
@@ -52,6 +57,19 @@ export class ShellIntegration {
       MENU_ACTION_EVENT,
       (event: { payload: MenuActionPayload }) => {
         onAction(event.payload.action);
+      },
+    );
+  }
+
+  async handleOpenPaths(onPaths: (paths: string[]) => void) {
+    if (!hasTauriRuntime()) {
+      return (() => {}) as UnlistenFn;
+    }
+
+    return getCurrentWindow().listen<OpenPathsPayload>(
+      OPEN_PATHS_EVENT,
+      (event: { payload: OpenPathsPayload }) => {
+        onPaths(event.payload.paths);
       },
     );
   }

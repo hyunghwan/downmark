@@ -50,6 +50,7 @@ type TestDependencies = AppDependencies & {
 
 class FakeShell implements ShellPort {
   private readonly menuListeners = new Set<(action: string) => void>();
+  private readonly openPathListeners = new Set<(paths: string[]) => void>();
   launchPath: string | null;
   newDraftWindowCalls = 0;
   openPathRequests: string[] = [];
@@ -84,9 +85,22 @@ class FakeShell implements ShellPort {
     };
   }
 
+  async handleOpenPaths(onPaths: (paths: string[]) => void) {
+    this.openPathListeners.add(onPaths);
+    return () => {
+      this.openPathListeners.delete(onPaths);
+    };
+  }
+
   emitMenuAction(action: string) {
     for (const listener of this.menuListeners) {
       listener(action);
+    }
+  }
+
+  emitOpenPaths(paths: string[]) {
+    for (const listener of this.openPathListeners) {
+      listener(paths);
     }
   }
 }
@@ -548,6 +562,56 @@ describe("Downmark app", () => {
 
     fireEvent.mouseDown(header as Element, { button: 0 });
     expect(startWindowDraggingMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens a file when a live shell open-path request arrives", async () => {
+    const dependencies = renderApp({
+      platform: "macos",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "Rich text editor" })).toBeInTheDocument();
+    });
+
+    act(() => {
+      dependencies.shell.emitOpenPaths(["/notes/current.md"]);
+    });
+
+    await waitForOpenFile("current.md");
+    expect(screen.getByRole("status")).toHaveTextContent("Saved");
+  });
+
+  it("prompts before replacing a dirty draft from a shell open-path request", async () => {
+    const user = userEvent.setup();
+    const dependencies = renderApp({
+      platform: "macos",
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("radio", { name: "Raw" })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("radio", { name: "Raw" }));
+    const textarea = (await screen.findByRole("textbox", {
+      name: "Raw markdown editor",
+    })) as HTMLTextAreaElement;
+    fireEvent.change(textarea, {
+      target: {
+        value: "# Draft\n\nUnsaved",
+      },
+    });
+
+    act(() => {
+      dependencies.shell.emitOpenPaths(["/notes/current.md"]);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("alertdialog", { name: "Unsaved changes" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Don't Save" }));
+    await waitForOpenFile("current.md");
+    expect(screen.getByRole("status")).toHaveTextContent("Saved");
   });
 
   it("uses the stored language override on first render", async () => {

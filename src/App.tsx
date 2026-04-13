@@ -54,7 +54,8 @@ import { ShellIntegration } from "./features/shell/shell-integration";
 
 type PromptState =
   | { kind: "none" }
-  | { kind: "external-modified" };
+  | { kind: "external-modified" }
+  | { kind: "open-request"; path: string };
 type DialogResult = string | string[] | null;
 type EditorFocusTarget = "raw" | "rich" | null;
 type SessionUpdate = FileSession | ((current: FileSession) => FileSession);
@@ -93,6 +94,7 @@ export interface AppDependencies {
   shell: Pick<
     ShellIntegration,
     | "getCurrentWindowLaunchPath"
+    | "handleOpenPaths"
     | "handleMenuAction"
     | "newDraftWindow"
     | "openPathInNewWindow"
@@ -1312,6 +1314,27 @@ function App({ dependencies }: AppProps) {
     },
   );
 
+  const handleOpenPathRequest = useEffectEvent(async (path: string) => {
+    if (promptStateRef.current.kind !== "none") {
+      await requestOpenInNewWindow(path);
+      return;
+    }
+
+    const currentSession = sessionRef.current;
+    if (currentSession.dirty) {
+      setPromptState({ kind: "open-request", path });
+      return;
+    }
+
+    const opened = await openPath(path, currentSession.mode);
+    if (!opened) {
+      await shell.syncCurrentWindowPath(null);
+      return;
+    }
+
+    setFocusTarget(currentSession.mode);
+  });
+
   const handlePromptAction = useEffectEvent(async (actionId: string) => {
     const currentPrompt = promptStateRef.current;
     const currentSession = sessionRef.current;
@@ -1330,12 +1353,37 @@ function App({ dependencies }: AppProps) {
       if (actionId === "save-as") {
         await saveAsDialog();
       }
+
+      return;
+    }
+
+    if (currentPrompt.kind === "open-request") {
+      if (actionId === "cancel") {
+        return;
+      }
+
+      if (actionId === "save") {
+        const saved = await saveCurrent();
+        if (!saved) {
+          return;
+        }
+      }
+
+      const opened = await openPath(currentPrompt.path, currentSession.mode);
+      if (!opened) {
+        await shell.syncCurrentWindowPath(null);
+      }
     }
   });
 
   const handlePromptDismiss = useEffectEvent(() => {
     if (promptState.kind === "external-modified") {
       void handlePromptAction("keep");
+      return;
+    }
+
+    if (promptState.kind === "open-request") {
+      void handlePromptAction("cancel");
     }
   });
 
@@ -1426,13 +1474,25 @@ function App({ dependencies }: AppProps) {
 
   useEffect(() => {
     let unlistenMenu: (() => void) | null = null;
+    let unlistenOpenPaths: (() => void) | null = null;
     let disposed = false;
 
     void (async () => {
+      unlistenOpenPaths = await shell.handleOpenPaths((paths) => {
+        for (const path of paths) {
+          void handleOpenPathRequest(path);
+        }
+      });
+      if (disposed) {
+        unlistenOpenPaths?.();
+        return;
+      }
+
       unlistenMenu = await shell.handleMenuAction((action) => {
         void runMenuAction(action);
       });
       if (disposed) {
+        unlistenOpenPaths?.();
         unlistenMenu?.();
         return;
       }
@@ -1451,10 +1511,7 @@ function App({ dependencies }: AppProps) {
       }
 
       if (launchPath) {
-        const opened = await openPath(launchPath, sessionRef.current.mode);
-        if (!opened) {
-          await shell.syncCurrentWindowPath(null);
-        }
+        await handleOpenPathRequest(launchPath);
       } else {
         await shell.syncCurrentWindowPath(sessionRef.current.path);
         setFocusTarget("rich");
@@ -1463,9 +1520,10 @@ function App({ dependencies }: AppProps) {
 
     return () => {
       disposed = true;
+      unlistenOpenPaths?.();
       unlistenMenu?.();
     };
-  }, [openPath, runMenuAction, shell]);
+  }, [handleOpenPathRequest, openPath, runMenuAction, shell]);
 
   const handleGlobalKeyDown = useEffectEvent((event: KeyboardEvent) => {
     if (event.defaultPrevented || event.altKey) {
@@ -1965,22 +2023,42 @@ function App({ dependencies }: AppProps) {
       </div>
 
       <PromptDialog
-        actions={[
-          {
-            id: "reload",
-            label: messages.prompts.reloadFromDisk,
-            tone: "primary",
-          },
-          { id: "keep", label: messages.prompts.keepMine },
-          { id: "save-as", label: messages.prompts.saveAs },
-        ]}
-        body={messages.prompts.externalModifiedBody}
+        actions={
+          promptState.kind === "external-modified"
+            ? [
+                {
+                  id: "reload",
+                  label: messages.prompts.reloadFromDisk,
+                  tone: "primary",
+                },
+                { id: "keep", label: messages.prompts.keepMine },
+                { id: "save-as", label: messages.prompts.saveAs },
+              ]
+            : [
+                {
+                  id: "save",
+                  label: messages.prompts.save,
+                  tone: "primary",
+                },
+                { id: "dont-save", label: messages.prompts.dontSave, tone: "danger" },
+                { id: "cancel", label: messages.prompts.cancel },
+              ]
+        }
+        body={
+          promptState.kind === "external-modified"
+            ? messages.prompts.externalModifiedBody
+            : messages.prompts.unsavedBody
+        }
         onAction={(actionId) => {
           void handlePromptAction(actionId);
         }}
         onRequestClose={handlePromptDismiss}
-        open={promptState.kind === "external-modified"}
-        title={messages.prompts.externalModifiedTitle}
+        open={promptState.kind !== "none"}
+        title={
+          promptState.kind === "external-modified"
+            ? messages.prompts.externalModifiedTitle
+            : messages.prompts.unsavedTitle
+        }
       />
     </>
   );

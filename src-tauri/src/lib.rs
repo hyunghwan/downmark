@@ -12,8 +12,8 @@ use std::{
 use sys_locale::get_locale;
 use tauri::{
     menu::{
-        CheckMenuItem, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder,
-        MenuItemKind, PredefinedMenuItem, Submenu, SubmenuBuilder,
+        CheckMenuItem, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, MenuItemKind,
+        PredefinedMenuItem, Submenu, SubmenuBuilder,
     },
     utils::config::WindowConfig,
     AppHandle, Emitter, Manager, Runtime, State, Url, WebviewUrl, WebviewWindow,
@@ -22,6 +22,7 @@ use tauri::{
 use tauri_plugin_dialog::DialogExt;
 
 const MENU_ACTION_EVENT: &str = "downmark://menu-action";
+const OPEN_PATHS_EVENT: &str = "downmark://open-paths";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const MAX_RECENT_FILES: usize = 12;
 const EDITOR_WINDOW_LABEL_PREFIX: &str = "editor-";
@@ -144,6 +145,12 @@ struct MenuActionPayload {
     action: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenPathsPayload {
+    paths: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 enum LanguagePreference {
@@ -249,7 +256,11 @@ fn save_file(
     if let Some(expected) = &request.expected_fingerprint {
         let current = fingerprint_for_existing_path(&path).map_err(|error| error.to_string())?;
         if current.exists && &current != expected {
-            release_document_key_write_reservation(&window_label, &next_document_key, registry.inner());
+            release_document_key_write_reservation(
+                &window_label,
+                &next_document_key,
+                registry.inner(),
+            );
             return Err("stale-write".to_string());
         }
     }
@@ -321,7 +332,8 @@ fn prepare_image_asset(request: PrepareImageAssetRequest) -> Result<PreparedImag
 
     fs::create_dir_all(document_directory).map_err(|error| error.to_string())?;
 
-    let source_count = usize::from(request.source_path.is_some()) + usize::from(request.bytes.is_some());
+    let source_count =
+        usize::from(request.source_path.is_some()) + usize::from(request.bytes.is_some());
     if source_count != 1 {
         return Err("Provide exactly one image source.".to_string());
     }
@@ -448,10 +460,26 @@ fn sync_language_menu_selection<R: Runtime>(
         return Ok(());
     };
 
-    set_language_item_checked(&menu, MENU_LANGUAGE_SYSTEM_ID, language_preference == LanguagePreference::System)?;
-    set_language_item_checked(&menu, MENU_LANGUAGE_EN_ID, language_preference == LanguagePreference::En)?;
-    set_language_item_checked(&menu, MENU_LANGUAGE_KO_ID, language_preference == LanguagePreference::Ko)?;
-    set_language_item_checked(&menu, MENU_LANGUAGE_ES_ID, language_preference == LanguagePreference::Es)?;
+    set_language_item_checked(
+        &menu,
+        MENU_LANGUAGE_SYSTEM_ID,
+        language_preference == LanguagePreference::System,
+    )?;
+    set_language_item_checked(
+        &menu,
+        MENU_LANGUAGE_EN_ID,
+        language_preference == LanguagePreference::En,
+    )?;
+    set_language_item_checked(
+        &menu,
+        MENU_LANGUAGE_KO_ID,
+        language_preference == LanguagePreference::Ko,
+    )?;
+    set_language_item_checked(
+        &menu,
+        MENU_LANGUAGE_ES_ID,
+        language_preference == LanguagePreference::Es,
+    )?;
 
     Ok(())
 }
@@ -543,6 +571,54 @@ fn assign_window_launch_path(
     Ok(())
 }
 
+fn emit_open_paths_to_window<R: Runtime>(window: &WebviewWindow<R>, paths: Vec<String>) {
+    let payload = OpenPathsPayload { paths };
+    let _ = window.emit(OPEN_PATHS_EVENT, payload);
+}
+
+fn try_dispatch_open_paths_to_blank_main_window<R: Runtime>(
+    app: &AppHandle<R>,
+    registry: &WindowRegistry,
+    paths: &[String],
+) -> usize {
+    let Some(first_path) = paths.first() else {
+        return 0;
+    };
+
+    let should_reuse_main = {
+        let registry_state = registry.0.lock().expect("window registry lock poisoned");
+        matches!(registry_state.window_paths.get("main"), Some(None))
+    };
+
+    if !should_reuse_main {
+        return 0;
+    }
+
+    let Some(window) = app.get_webview_window("main") else {
+        return 0;
+    };
+
+    if assign_window_launch_path("main", first_path, registry).is_err() {
+        return 0;
+    }
+
+    emit_open_paths_to_window(&window, vec![first_path.clone()]);
+    focus_window_by_label(app, "main");
+    1
+}
+
+fn open_paths_for_app<R: Runtime>(
+    app: &AppHandle<R>,
+    registry: &WindowRegistry,
+    paths: Vec<String>,
+) {
+    let dispatched_count = try_dispatch_open_paths_to_blank_main_window(app, registry, &paths);
+
+    for path in paths.into_iter().skip(dispatched_count) {
+        let _ = create_or_focus_document_window(app, registry, &path);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let launch_paths = collect_path_args(std::env::args_os().skip(1));
@@ -587,9 +663,7 @@ pub fn run() {
                 return;
             }
 
-            for path in paths {
-                let _ = create_or_focus_document_window(&app, registry.inner(), &path);
-            }
+            open_paths_for_app(&app, registry.inner(), paths);
         }))
         .plugin(tauri_plugin_dialog::init())
         .manage(WindowRegistry(Mutex::new(WindowRegistryState::default())))
@@ -617,9 +691,7 @@ pub fn run() {
         match event {
             tauri::RunEvent::Opened { urls } => {
                 let registry = app_handle.state::<WindowRegistry>();
-                for path in collect_paths_from_urls(urls) {
-                    let _ = create_or_focus_document_window(app_handle, registry.inner(), &path);
-                }
+                open_paths_for_app(app_handle, registry.inner(), collect_paths_from_urls(urls));
             }
             tauri::RunEvent::Reopen {
                 has_visible_windows,
@@ -682,24 +754,19 @@ fn build_app_menu_with_settings<R: Runtime>(
     let raw_mode = MenuItemBuilder::with_id(MENU_RAW_MODE_ID, strings.raw_mode)
         .accelerator("CmdOrCtrl+2")
         .build(app)?;
-    let language_system = CheckMenuItemBuilder::with_id(
-        MENU_LANGUAGE_SYSTEM_ID,
-        strings.system_default,
-    )
-    .checked(settings.language_preference == LanguagePreference::System)
-    .build(app)?;
-    let language_en =
-        CheckMenuItemBuilder::with_id(MENU_LANGUAGE_EN_ID, strings.english)
-            .checked(settings.language_preference == LanguagePreference::En)
+    let language_system =
+        CheckMenuItemBuilder::with_id(MENU_LANGUAGE_SYSTEM_ID, strings.system_default)
+            .checked(settings.language_preference == LanguagePreference::System)
             .build(app)?;
-    let language_ko =
-        CheckMenuItemBuilder::with_id(MENU_LANGUAGE_KO_ID, strings.korean)
-            .checked(settings.language_preference == LanguagePreference::Ko)
-            .build(app)?;
-    let language_es =
-        CheckMenuItemBuilder::with_id(MENU_LANGUAGE_ES_ID, strings.spanish)
-            .checked(settings.language_preference == LanguagePreference::Es)
-            .build(app)?;
+    let language_en = CheckMenuItemBuilder::with_id(MENU_LANGUAGE_EN_ID, strings.english)
+        .checked(settings.language_preference == LanguagePreference::En)
+        .build(app)?;
+    let language_ko = CheckMenuItemBuilder::with_id(MENU_LANGUAGE_KO_ID, strings.korean)
+        .checked(settings.language_preference == LanguagePreference::Ko)
+        .build(app)?;
+    let language_es = CheckMenuItemBuilder::with_id(MENU_LANGUAGE_ES_ID, strings.spanish)
+        .checked(settings.language_preference == LanguagePreference::Es)
+        .build(app)?;
 
     let separator = PredefinedMenuItem::separator(app)?;
     let close_window = PredefinedMenuItem::close_window(app, None)?;
@@ -853,8 +920,11 @@ fn pick_markdown_file_for_app<R: Runtime>(app: &AppHandle<R>) {
                 return;
             };
             let registry = app_handle.state::<WindowRegistry>();
-            let _ =
-                create_or_focus_document_window(&app_handle, registry.inner(), &path.to_string_lossy());
+            let _ = create_or_focus_document_window(
+                &app_handle,
+                registry.inner(),
+                &path.to_string_lossy(),
+            );
         });
 }
 
@@ -1015,7 +1085,9 @@ fn register_window_document(
         .insert(window_label.to_string(), document_key.clone())
         .flatten()
     {
-        registry_state.document_windows.remove(&previous_document_key);
+        registry_state
+            .document_windows
+            .remove(&previous_document_key);
     }
 
     if let Some(document_key) = document_key {
@@ -1054,14 +1126,19 @@ fn sync_window_document_path(
     registry: &WindowRegistry,
 ) -> Result<(), String> {
     let document_key = match path {
-        Some(path) => Some(resolve_window_document_path(Path::new(&path))?.to_string_lossy().into_owned()),
+        Some(path) => Some(
+            resolve_window_document_path(Path::new(&path))?
+                .to_string_lossy()
+                .into_owned(),
+        ),
         None => None,
     };
 
     {
         let registry_state = registry.0.lock().expect("window registry lock poisoned");
         if let Some(document_key) = &document_key {
-            if let Some(existing_label) = registry_state.document_windows.get(document_key).cloned() {
+            if let Some(existing_label) = registry_state.document_windows.get(document_key).cloned()
+            {
                 if existing_label != window_label {
                     drop(registry_state);
                     focus_window_by_label(app, &existing_label);
@@ -1101,7 +1178,9 @@ fn reserve_document_key_for_write(
                     .insert(document_key.to_string(), window_label.to_string());
                 None
             }
-        } else if let Some(existing_label) = registry_state.pending_writes.get(document_key).cloned() {
+        } else if let Some(existing_label) =
+            registry_state.pending_writes.get(document_key).cloned()
+        {
             if existing_label != window_label {
                 Some(existing_label)
             } else {
@@ -1214,7 +1293,10 @@ fn normalize_absolute_path(path: &Path) -> PathBuf {
 fn next_editor_window_label(registry: &WindowRegistry) -> String {
     let mut registry_state = registry.0.lock().expect("window registry lock poisoned");
     registry_state.next_window_index += 1;
-    format!("{EDITOR_WINDOW_LABEL_PREFIX}{}", registry_state.next_window_index)
+    format!(
+        "{EDITOR_WINDOW_LABEL_PREFIX}{}",
+        registry_state.next_window_index
+    )
 }
 
 fn main_window_config<R: Runtime>(app: &AppHandle<R>) -> Result<WindowConfig, String> {
@@ -1274,7 +1356,10 @@ fn build_editor_window<R: Runtime>(
     }
 }
 
-fn create_blank_window<R: Runtime>(app: &AppHandle<R>, registry: &WindowRegistry) -> Result<(), String> {
+fn create_blank_window<R: Runtime>(
+    app: &AppHandle<R>,
+    registry: &WindowRegistry,
+) -> Result<(), String> {
     let window_label = next_editor_window_label(registry);
     register_window_document(&window_label, None, registry);
     build_editor_window(app, registry, &window_label, None)
@@ -1488,7 +1573,10 @@ fn infer_extension_from_mime(mime_type: Option<&str>) -> Option<String> {
 
 fn sanitize_extension(raw: &str) -> Option<String> {
     let normalized = raw.trim().trim_start_matches('.').to_ascii_lowercase();
-    if normalized.is_empty() || !normalized.chars().all(|character| character.is_ascii_alphanumeric())
+    if normalized.is_empty()
+        || !normalized
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
     {
         return None;
     }
@@ -1514,13 +1602,9 @@ fn encode_url_path_component(value: &str) -> String {
 
     for byte in value.as_bytes() {
         match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~' => encoded.push(char::from(*byte)),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(char::from(*byte))
+            }
             _ => encoded.push_str(&format!("%{:02X}", byte)),
         }
     }
@@ -1574,14 +1658,20 @@ fn replace_existing_file(from: &Path, to: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalize_markdown, collect_path_args, collect_paths_from_urls, default_app_settings,
-        detect_newline_style, hydrate_settings, normalize_newlines, normalize_absolute_path,
-        prepare_image_asset, register_window_document, resolve_existing_document_key,
-        resolve_supported_locale, resolve_window_document_path, unregister_window, AppSettings,
-        LanguagePreference, PrepareImageAssetRequest, PreparedImageAsset, RecentFile,
-        StoredAppSettings, SupportedLocale, WindowRegistry, WindowRegistryState,
+        assign_window_launch_path, canonicalize_markdown, collect_path_args,
+        collect_paths_from_urls, default_app_settings, detect_newline_style, hydrate_settings,
+        normalize_absolute_path, normalize_newlines, prepare_image_asset, register_window_document,
+        resolve_existing_document_key, resolve_supported_locale, resolve_window_document_path,
+        unregister_window, AppSettings, LanguagePreference, PrepareImageAssetRequest,
+        PreparedImageAsset, RecentFile, StoredAppSettings, SupportedLocale, WindowRegistry,
+        WindowRegistryState,
     };
-    use std::{ffi::OsString, fs, path::{Path, PathBuf}, sync::Mutex};
+    use std::{
+        ffi::OsString,
+        fs,
+        path::{Path, PathBuf},
+        sync::Mutex,
+    };
     use tauri::Url;
 
     #[test]
@@ -1802,7 +1892,13 @@ mod tests {
 
         let key = resolve_existing_document_key(Path::new(&document_path))
             .expect("resolves canonical path");
-        assert_eq!(key, document_path.canonicalize().expect("canonical path").to_string_lossy());
+        assert_eq!(
+            key,
+            document_path
+                .canonicalize()
+                .expect("canonical path")
+                .to_string_lossy()
+        );
 
         fs::remove_dir_all(directory).expect("cleans up temp directory");
     }
@@ -1820,7 +1916,9 @@ mod tests {
                 registry_state.window_paths.get("editor-1"),
                 Some(&Some("/notes/second.md".to_string()))
             );
-            assert!(!registry_state.document_windows.contains_key("/notes/first.md"));
+            assert!(!registry_state
+                .document_windows
+                .contains_key("/notes/first.md"));
             assert_eq!(
                 registry_state.document_windows.get("/notes/second.md"),
                 Some(&"editor-1".to_string())
@@ -1831,7 +1929,9 @@ mod tests {
 
         let registry_state = registry.0.lock().expect("window registry lock poisoned");
         assert!(!registry_state.window_paths.contains_key("editor-1"));
-        assert!(!registry_state.document_windows.contains_key("/notes/second.md"));
+        assert!(!registry_state
+            .document_windows
+            .contains_key("/notes/second.md"));
     }
 
     #[test]
@@ -1849,7 +1949,9 @@ mod tests {
 
         {
             let registry_state = registry.0.lock().expect("window registry lock poisoned");
-            assert!(!registry_state.pending_writes.contains_key("/notes/second.md"));
+            assert!(!registry_state
+                .pending_writes
+                .contains_key("/notes/second.md"));
         }
 
         {
@@ -1866,6 +1968,36 @@ mod tests {
             .pending_writes
             .values()
             .any(|owner| owner == "editor-1"));
+    }
+
+    #[test]
+    fn assign_window_launch_path_updates_blank_main_window_registry() {
+        let registry = WindowRegistry(Mutex::new(WindowRegistryState::default()));
+        let directory = create_test_directory("launch-path");
+        let document_path = directory.join("current.md");
+        fs::write(&document_path, "# Current").expect("writes markdown file");
+        let document_key = document_path
+            .canonicalize()
+            .expect("canonical document path")
+            .to_string_lossy()
+            .into_owned();
+        register_window_document("main", None, &registry);
+
+        assign_window_launch_path("main", &document_path.to_string_lossy(), &registry)
+            .expect("assigns launch path");
+
+        let registry_state = registry.0.lock().expect("window registry lock poisoned");
+        assert_eq!(
+            registry_state.window_paths.get("main"),
+            Some(&Some(document_key.clone()))
+        );
+        assert_eq!(registry_state.launch_paths.get("main"), Some(&document_key));
+        assert_eq!(
+            registry_state.document_windows.get(&document_key),
+            Some(&"main".to_string())
+        );
+
+        fs::remove_dir_all(directory).expect("cleans up temp directory");
     }
 
     fn create_test_directory(label: &str) -> PathBuf {
