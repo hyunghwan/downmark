@@ -6,10 +6,14 @@ on:
       - "v*"
   workflow_dispatch:
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  publish-tauri:
+  build-release-bundles:
     permissions:
-      contents: write
+      contents: read
     env:
       HAS_APPLE_RELEASE_SIGNING: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.KEYCHAIN_PASSWORD != '' && secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
       HAS_WINDOWS_SIGNING: ${{ secrets.WINDOWS_CERTIFICATE != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' && vars.WINDOWS_CERTIFICATE_THUMBPRINT != '' && vars.WINDOWS_TIMESTAMP_URL != '' }}
@@ -19,11 +23,24 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
-            args: --target aarch64-apple-darwin
+            artifact_name: downmark-macos-aarch64
+            tauri_args: --target aarch64-apple-darwin
+            bundle_args: dmg
+            artifact_paths: |
+              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           - platform: macos-latest
-            args: --target x86_64-apple-darwin
+            artifact_name: downmark-macos-x86_64
+            tauri_args: --target x86_64-apple-darwin
+            bundle_args: dmg
+            artifact_paths: |
+              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           - platform: windows-latest
-            args: ""
+            artifact_name: downmark-windows
+            tauri_args:
+            bundle_args: nsis,msi
+            artifact_paths: |
+              src-tauri/target/release/bundle/**/*.exe
+              src-tauri/target/release/bundle/**/*.msi
 
     runs-on: ${{ matrix.platform }}
 
@@ -76,13 +93,11 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Require macOS signing and notarization secrets
+      - name: Announce unsigned macOS DMG packaging
         if: runner.os == 'macOS' && env.HAS_APPLE_RELEASE_SIGNING != 'true'
         shell: bash
         run: |
-          echo "Missing macOS release signing or notarization secrets." >&2
-          echo "Set APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, KEYCHAIN_PASSWORD, APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID before publishing a macOS release." >&2
-          exit 1
+          echo "Building unsigned macOS DMG because signing and notarization secrets are not configured."
 
       - name: Import Apple signing certificate
         if: runner.os == 'macOS' && env.HAS_APPLE_RELEASE_SIGNING == 'true'
@@ -148,16 +163,145 @@ jobs:
           Set-Content -Path $configPath -Value $config -Encoding utf8
           "extra_args=--config src-tauri/tauri.windows.conf.json" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Build and upload release artifacts
-        uses: tauri-apps/tauri-action@v0.6.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build release bundles
+        run: npm run tauri -- build --bundles ${{ matrix.bundle_args }} ${{ matrix.tauri_args }} ${{ steps.windows_signing.outputs.extra_args }}
+
+      - name: Repack unsigned macOS DMG
+        if: runner.os == 'macOS' && env.HAS_APPLE_RELEASE_SIGNING != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          dmgs=(src-tauri/target/*/release/bundle/dmg/*.dmg)
+          if [ "${#dmgs[@]}" -eq 0 ]; then
+            echo "Expected at least one macOS DMG to repack." >&2
+            exit 1
+          fi
+
+          for dmg in "${dmgs[@]}"; do
+            bash ./scripts/repack-unsigned-macos-dmg.sh "$dmg"
+          done
+
+      - name: Upload release bundles
+        uses: actions/upload-artifact@v4
         with:
-          tagName: v__VERSION__
-          releaseName: Downmark v__VERSION__
-          releaseBody: See the assets below to download the macOS and Windows builds.
-          releaseDraft: false
-          prerelease: false
-          generateReleaseNotes: true
-          assetNamePattern: "[name]-[platform]-[arch][setup][ext]"
-          args: ${{ format('{0} {1}', matrix.args, steps.windows_signing.outputs.extra_args) }}
+          name: ${{ matrix.artifact_name }}-${{ github.sha }}
+          path: ${{ matrix.artifact_paths }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release:
+    needs: build-release-bundles
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Download built bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-artifacts
+          pattern: downmark-*-${{ github.sha }}
+
+      - name: Prepare release assets and notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob globstar
+
+          APP_VERSION="$(node -p "JSON.parse(require('fs').readFileSync('package.json', 'utf8')).version")"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          else
+            RELEASE_TAG="v${APP_VERSION}"
+          fi
+
+          echo "APP_VERSION=${APP_VERSION}" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> "$GITHUB_ENV"
+
+          copy_optional() {
+            local pattern="$1"
+            local destination="$2"
+            local label="$3"
+            local matches=( $pattern )
+
+            if [ "${#matches[@]}" -eq 0 ]; then
+              echo "- ${label}: unavailable in this release" >> version-release-notes.md
+              return
+            fi
+
+            cp "${matches[0]}" "$destination"
+            echo "- ${label}: $(basename "$destination")" >> version-release-notes.md
+          }
+
+          mkdir -p public-release
+
+          cat > version-release-notes.md <<EOF
+          Downmark v${APP_VERSION}
+
+          Commit: \`${GITHUB_SHA}\`
+          Generated: $(date -u +"%Y-%m-%d %H:%M:%SZ")
+
+          macOS packaging:
+          - If Apple signing secrets are configured, macOS assets are notarized DMGs.
+          - Otherwise, macOS assets are unsigned DMGs containing an ad-hoc signed app and may require bypassing Gatekeeper locally.
+
+          Opening unsigned macOS builds:
+          1. Open the DMG and drag Downmark into Applications.
+          2. Control-click the app and choose Open on the first launch.
+          3. If macOS still blocks it, use System Settings > Privacy & Security > Open Anyway.
+
+          Assets:
+          EOF
+
+          copy_optional "downloaded-artifacts/downmark-macos-aarch64-${GITHUB_SHA}/**/*.dmg" \
+            "public-release/Downmark-darwin-aarch64.dmg" \
+            "Apple Silicon macOS"
+          copy_optional "downloaded-artifacts/downmark-macos-x86_64-${GITHUB_SHA}/**/*.dmg" \
+            "public-release/Downmark-darwin-x64.dmg" \
+            "Intel macOS"
+          copy_optional "downloaded-artifacts/downmark-windows-${GITHUB_SHA}/**/*setup.exe" \
+            "public-release/Downmark-windows-x64-setup.exe" \
+            "Windows installer (.exe)"
+          copy_optional "downloaded-artifacts/downmark-windows-${GITHUB_SHA}/**/*.msi" \
+            "public-release/Downmark-windows-x64.msi" \
+            "Windows installer (.msi)"
+
+          if ! compgen -G "public-release/*" >/dev/null; then
+            echo "No release assets were produced." >&2
+            exit 1
+          fi
+
+      - name: Publish versioned release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release delete "${RELEASE_TAG}" --yes
+          fi
+
+          VERIFY_TAG_FLAG=()
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERIFY_TAG_FLAG+=(--verify-tag)
+          fi
+
+          gh release create "${RELEASE_TAG}" \
+            "${VERIFY_TAG_FLAG[@]}" \
+            --target "${GITHUB_SHA}" \
+            --title "Downmark v${APP_VERSION}" \
+            --notes-file version-release-notes.md \
+            --latest \
+            public-release/*
